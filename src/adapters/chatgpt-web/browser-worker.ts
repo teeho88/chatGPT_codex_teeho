@@ -122,7 +122,7 @@ export const CHATGPT_RESPONSE_DOM_GRACE_MS = 300_000;
  * No MCP activity exists while that inert part is being ingested, so the response grace matches
  * the bounded staged-send budget.
  */
-export const CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS = 180_000;
+export const CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS = 360_000;
 export const CHATGPT_EMPTY_RESPONSE_GRACE_MS = 10_000;
 export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 60_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
@@ -1101,7 +1101,7 @@ export const browserStageTimeouts = {
   send: 20_000,
   // A Bigger Context stage posts a much larger payload onto a conversation that already holds the
   // earlier parts. This budget covers ChatGPT accepting the submission, not just the click.
-  multipartStageSend: 180_000,
+  multipartStageSend: CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS,
   // Staging asks for one transaction-bound acknowledgement, not an open-ended model answer.
   multipartStageAcknowledgement: CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS,
 } as const;
