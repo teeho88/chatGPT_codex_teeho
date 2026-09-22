@@ -23,7 +23,8 @@ function Confirm-BunVersion([string]$Path) {
 
 if (-not (Confirm-BunVersion $bunExecutable)) {
   if (Test-Path -LiteralPath $bunRoot) {
-    throw "Cached Bun at $bunRoot is not version $bunVersion. Remove that directory and run this script again."
+    Write-Host "Cached Bun at $bunRoot is not version $bunVersion. Replacing it."
+    Remove-Item -LiteralPath $bunRoot -Recurse -Force
   }
 
   $downloadRoot = Join-Path $env:TEMP "codex-chatgpt-web-bun-$bunVersion-$PID"
@@ -51,7 +52,7 @@ if (-not (Confirm-BunVersion $bunExecutable)) {
     if ($downloadedBun.Count -ne 1) {
       throw "Bun archive contained $($downloadedBun.Count) bun.exe files."
     }
-    New-Item -ItemType Directory -Path $bunRoot | Out-Null
+    New-Item -ItemType Directory -Path $bunRoot -Force | Out-Null
     Copy-Item -LiteralPath $downloadedBun[0].FullName -Destination $bunExecutable
   } finally {
     Remove-Item -LiteralPath $downloadRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -83,7 +84,11 @@ try {
   Pop-Location
 }
 
-$installers = Get-ChildItem -Path (Join-Path $projectRoot "launcher\release") -Filter "*.exe" -File
-if ($installers) {
-  Write-Host "Installer created: $($installers[0].FullName)"
+$artifactsDirectory = Join-Path $projectRoot "launcher\artifacts"
+$installers = @(Get-ChildItem -LiteralPath $artifactsDirectory -Filter "*.exe" -File)
+if ($installers.Count -eq 0) {
+  throw "Packaging completed but no Windows installer was found in $artifactsDirectory."
 }
+
+$installer = $installers | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+Write-Host "Installer created: $($installer.FullName)"
