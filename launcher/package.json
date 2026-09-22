@@ -4,6 +4,10 @@
   "private": true,
   "description": "Desktop control center for Codex ChatGPT Web",
   "author": "miuuyy",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/miuuyy/codex-chatgpt-web.git"
+  },
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
