@@ -92,6 +92,7 @@ import {
 } from "./rolling-checkpoint";
 import {
   chatGptExternalProgressIsLive,
+  chatGptExternalRuntimeIsLive,
   chatGptExternalToolCallsAreInFlight,
 } from "./turn-progress";
 import type {
@@ -1643,6 +1644,9 @@ export function chatGptExternalProgressSuppressesDomHealth(
   snapshot: ChatGptExternalTurnProgressSnapshot | undefined,
   now: number,
 ): boolean {
+  if (snapshot?.phase === "waiting_for_user") {
+    return chatGptExternalRuntimeIsLive(snapshot, now, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS);
+  }
   if (!chatGptExternalProgressIsLive(snapshot, now, CHATGPT_RESPONSE_DOM_GRACE_MS)) return false;
   const lastProgressAt = snapshot?.lastProgressAt;
   if (lastProgressAt === undefined) return false;
