@@ -78,7 +78,13 @@ try {
     Pop-Location
   }
 
-  & $bunExecutable run app:package
+  & $bunExecutable run --cwd launcher build
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  & $bunExecutable run --cwd launcher scripts/prepare-runtime.cjs
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  & $bunExecutable run --cwd launcher scripts/package.cjs
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } finally {
   Pop-Location
