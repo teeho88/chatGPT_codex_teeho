@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { isChatGptWebZeroRiskBackendModel } from "../../chatgpt-web-models";
-import { defaultBrokerEndpoint, expandUserPath, resolveBrokerEndpoint } from "../../config";
+import { defaultBrokerEndpoint, expandUserPath, getConfigDir, resolveBrokerEndpoint } from "../../config";
 import {
   cancelLauncherManualTurn,
   endLauncherManualTurn,
@@ -36,6 +36,7 @@ import {
   type CapturedChatGptLunaCheckpoint,
 } from "./rolling-checkpoint";
 import { ChatGptExternalTurnProgress } from "./turn-progress";
+import { UserWaitStore } from "./user-wait-store";
 import {
   canonicalizeCompactionHandoff,
   existingStructuredCompactionRun,
@@ -397,6 +398,11 @@ export function createChatGptWebAdapter(
       ? resolve(expandUserPath(provider.chatgptWeb.lunaCheckpointStatePath))
       : undefined,
   );
+  const userWaitStore = new UserWaitStore(
+    provider.chatgptWeb?.userWaitStatePath
+      ? resolve(expandUserPath(provider.chatgptWeb.userWaitStatePath))
+      : resolve(getConfigDir(), "runtime", "user-waits"),
+  );
   const currentUsageInput = (parsed: CodexParsedRequest): CodexParsedRequest => (
     parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID && !parsed._compactionRequest
       ? lunaCheckpointStore.apply(parsed).parsed
@@ -586,9 +592,27 @@ export function createChatGptWebAdapter(
             ...(parsed._compactionRequest ? { compaction: true as const } : {}),
           });
           launcherStarted = true;
-          await zeroRiskManualControl.waitSent(retainedLauncherDescriptor, owner, {
-            abortSignal: browserAbort.signal,
+          const identity = extractChatGptTurnIdentity(parsed);
+          if (!identity.turnId) throw new Error("ChatGPT Zero Risk requires a native turn id for durable user waits");
+          const userWaitTaskId = createHash("sha256").update(identity.turnId).digest("hex");
+          const enteredAt = Date.now();
+          await userWaitStore.save({
+            version: 1,
+            taskId: userWaitTaskId,
+            ...(identity.threadId ? { nativeThreadId: identity.threadId } : {}),
+            nativeTurnId: identity.turnId,
+            ...(conversationKey ? { conversationKey } : {}),
+            wait: { waitId: `manual_${activeToken}`, kind: "manual_step", enteredAt, ownerTurnId: activeToken },
+            outstandingToolCallIds: [],
+            suspendedAt: enteredAt,
           });
+          try {
+            await zeroRiskManualControl.waitSent(retainedLauncherDescriptor, owner, {
+              abortSignal: browserAbort.signal,
+            });
+          } finally {
+            await userWaitStore.remove(userWaitTaskId);
+          }
           await broker.confirmSafeTurnSent(activeToken, surfaceNonce);
           submission.phase = "accepted";
           if (!parsed._compactionRequest) trace.push({
