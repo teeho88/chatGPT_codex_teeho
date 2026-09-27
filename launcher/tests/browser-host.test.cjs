@@ -3009,7 +3009,7 @@ test("manual start is idempotent and never exposes its private prompt in snapsho
   for (const tab of fixture.turnTabs.values()) clearTimeout(tab.manualDeadlineTimer);
 });
 
-test("manual confirmation deadlines end at Sent so slow model startup can still complete", async (t) => {
+test("manual user wait does not expire while runtime ownership remains valid", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
   const { fixture } = manualTurnFixture();
   const ordinary = fixture.beginManualTurn("manual_ordinary", process.pid, "ordinary prompt");
@@ -3025,17 +3025,20 @@ test("manual confirmation deadlines end at Sent so slow model startup can still 
   const compactionTab = fixture.turnTabs.get(compaction.tabId);
   assert.equal(ordinaryTab.manualSubmitTimeoutMs, 60_000);
   assert.equal(compactionTab.manualSubmitTimeoutMs, 120_000);
-  t.mock.timers.tick(31_000);
+  t.mock.timers.tick(60_000);
   assert.equal(ordinaryTab.manualState, "awaiting-user");
-  t.mock.timers.tick(29_000);
-  assert.equal(ordinaryTab.manualState, "timed-out");
+  assert.equal(ordinaryTab.manualDeadlineAt, null);
+  t.mock.timers.tick(3_600_000);
+  assert.equal(ordinaryTab.manualState, "awaiting-user");
   assert.equal(compactionTab.manualState, "awaiting-user");
+  assert.equal(compactionTab.manualDeadlineAt, null);
 
   const slow = fixture.beginManualTurn("manual_slow_model", process.pid, "slow model prompt");
+  fixture.confirmManualSent(ordinary.tabId);
   fixture.confirmManualSent(slow.tabId);
   fixture.confirmManualSent(compaction.tabId);
   t.mock.timers.tick(180_000);
-  for (const lease of [slow, compaction]) {
+  for (const lease of [ordinary, slow, compaction]) {
     const tab = fixture.turnTabs.get(lease.tabId);
     assert.equal(tab.manualState, "sent");
     assert.equal(tab.manualDeadlineAt, null);
@@ -3262,7 +3265,7 @@ test("manual recovery preserves the prompt until running and keeps repeated star
   const tab = fixture.turnTabs.get(lease.tabId);
   tab.manualDeadlineAt = Date.now() + 1;
   fixture.copyManualPrompt(tab.id);
-  assert.ok(tab.manualDeadlineAt > Date.now() + 50_000);
+  assert.equal(tab.manualDeadlineAt, null);
   fixture.confirmManualSent(tab.id);
   fixture.copyManualPrompt(tab.id);
   assert.equal(tab.manualState, "sent");
@@ -3276,15 +3279,17 @@ test("manual recovery preserves the prompt until running and keeps repeated star
   fixture.cancelManualTurn("recover", process.pid);
 });
 
-test("manual Sent timeout and explicit cancellation are terminal", async () => {
+test("manual Sent wait stays pending while explicit cancellation remains terminal", async () => {
   const { fixture } = manualTurnFixture();
-  const timed = fixture.beginManualTurn("manual_timeout", process.pid, "timeout prompt");
-  const timedTab = fixture.turnTabs.get(timed.tabId);
-  clearTimeout(timedTab.manualDeadlineTimer);
-  timedTab.manualDeadlineAt = Date.now();
-  fixture.armManualTurnDeadline(timedTab);
-  await new Promise(resolve => setTimeout(resolve, 5));
-  assert.deepEqual(await fixture.waitManualSent("manual_timeout", process.pid, 10), { status: "timeout" });
+  const waiting = fixture.beginManualTurn("manual_wait", process.pid, "waiting prompt");
+  const waitingTab = fixture.turnTabs.get(waiting.tabId);
+  waitingTab.manualDeadlineAt = Date.now();
+  fixture.armManualTurnDeadline(waitingTab);
+  assert.equal(waitingTab.manualDeadlineAt, null);
+  const pendingWait = fixture.waitManualSent("manual_wait", process.pid, 10);
+  await new Promise(resolve => setTimeout(resolve, 15));
+  assert.deepEqual(await pendingWait, { status: "pending" });
+  fixture.cancelManualTurn("manual_wait", process.pid);
 
   const cancelled = fixture.beginManualTurn("manual_cancel", process.pid, "cancel prompt");
   fixture.confirmManualSent(cancelled.tabId);

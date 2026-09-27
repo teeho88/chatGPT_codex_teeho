@@ -3157,11 +3157,15 @@ test("manual ChatGPT connector approval pauses and resumes the same browser turn
   expect(fixture.pressed).toEqual([]);
 });
 
-test("an unanswered ChatGPT connector approval is denied instead of aborting the turn", async () => {
+test("an unanswered ChatGPT connector approval remains pending until the turn is aborted", async () => {
   const fixture = toolConfirmationPage();
+  const controller = new AbortController();
+  const pending = resolveChatGptToolConfirmation(fixture.page, "Codex Native", false, controller.signal, 2);
 
-  expect(await resolveChatGptToolConfirmation(fixture.page, "Codex Native", false, undefined, 2)).toBeTrue();
-  expect(fixture.pressed).toEqual(["Deny:Enter"]);
+  await Promise.resolve();
+  expect(fixture.pressed).toEqual([]);
+  controller.abort();
+  await expect(pending).rejects.toMatchObject({ name: "AbortError" });
 });
 
 test("explicit connector auto-approval still selects Allow once", async () => {

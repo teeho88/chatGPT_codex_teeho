@@ -914,19 +914,12 @@ export async function resolveChatGptToolConfirmation(
     return true;
   }
 
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  const pollIntervalMs = Math.min(100, Math.max(1, timeoutMs));
+  for (;;) {
     if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
     if (!await dialog.isVisible().catch(() => false)) return true;
-    await new Promise(resolveSleep => setTimeout(resolveSleep, Math.min(100, Math.max(1, deadline - Date.now()))));
+    await new Promise(resolveSleep => setTimeout(resolveSleep, pollIntervalMs));
   }
-
-  if (!await dialog.isVisible().catch(() => false)) return true;
-  const deny = dialog.getByRole("button", { name: "Deny", exact: true }).last();
-  await deny.waitFor({ state: "visible", timeout: 5_000 });
-  await deny.press("Enter");
-  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
-  return true;
 }
 
 export function assertChatGptWebInputWithinLimits(
@@ -4777,7 +4770,7 @@ export class ChatGptBrowserWorker {
           maxMessageChars,
         );
       }
-      const deadline = this.config.turnTimeoutMs === undefined
+      let deadline = this.config.turnTimeoutMs === undefined
         ? undefined
         : Date.now() + this.config.turnTimeoutMs;
       let page = await this.runStage(turn.traceId, "browser_page", browserStageTimeouts.browserPage, async (abortSignal) => {
@@ -5269,14 +5262,21 @@ export class ChatGptBrowserWorker {
         await throwIfChatGptSessionFailureAlert(page);
         await throwIfChatGptTerminalErrorAlert(responseTurn.locator);
 
+        let confirmationVisibleAt: number | undefined;
         if (mode.localTools && await resolveChatGptToolConfirmation(
           page,
           this.config.appName,
           this.config.autoApproveToolCalls,
           turn.abortSignal,
           CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS,
-          () => diagnostics.capture(page, "tool-confirmation-visible"),
+          async () => {
+            confirmationVisibleAt = Date.now();
+            await diagnostics.capture(page, "tool-confirmation-visible");
+          },
         )) {
+          if (deadline !== undefined && confirmationVisibleAt !== undefined) {
+            deadline += Date.now() - confirmationVisibleAt;
+          }
           internalObservationFaults = 0;
           await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
           continue;

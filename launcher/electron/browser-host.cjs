@@ -674,7 +674,7 @@ class BrowserHost {
       interactionMode: "manual",
       manualState: "awaiting-user",
       manualSubmitTimeoutMs,
-      manualDeadlineAt: Date.now() + manualSubmitTimeoutMs,
+      manualDeadlineAt: null,
       manualDeadlineTimer: null,
       manualWaiters: new Set(),
       manualTerminalWaiters: new Set(),
@@ -2051,26 +2051,9 @@ class BrowserHost {
   }
 
   armManualTurnDeadline(tab) {
-    if (tab.interactionMode !== "manual"
-      || tab.manualState !== "awaiting-user"
-      || !tab.manualDeadlineAt) return;
     if (tab.manualDeadlineTimer) clearTimeout(tab.manualDeadlineTimer);
-    const delay = Math.max(0, tab.manualDeadlineAt - Date.now());
-    tab.manualDeadlineTimer = setTimeout(() => {
-      if (this.turnTabs.get(tab.id) !== tab
-        || tab.manualState !== "awaiting-user") return;
-      const timeoutSeconds = Math.round(tab.manualSubmitTimeoutMs / 1_000);
-      tab.status = "error";
-      tab.message = `Prompt submission was not confirmed within ${timeoutSeconds} seconds`;
-      this.signalManualTerminal(tab, "timeout");
-      this.publishState?.(this.snapshot());
-      this.logger.warn("browser.manual_turn_timed_out", {
-        tabId: tab.id,
-        traceId: tab.traceId,
-        phase: "sent-confirmation",
-      });
-    }, delay);
-    tab.manualDeadlineTimer.unref?.();
+    tab.manualDeadlineTimer = null;
+    tab.manualDeadlineAt = null;
   }
 
   writeManualPrompt(prompt) {
@@ -2172,7 +2155,7 @@ class BrowserHost {
       tab.message = "Paste the copied prompt, add any images yourself because Zero Risk cannot transfer them, choose a model and effort, then press Sent";
       tab.manualState = "awaiting-user";
       tab.manualSubmitTimeoutMs = manualSubmitTimeoutMs;
-      tab.manualDeadlineAt = Date.now() + manualSubmitTimeoutMs;
+      tab.manualDeadlineAt = null;
       tab.prompt = resumePrompt;
       tab.promptDigest = manualPromptDigest(resumePrompt);
       tab.manualConversationReused = true;
@@ -2208,7 +2191,7 @@ class BrowserHost {
     return {
       tabId: tab.id,
       reused: retained.length === 1,
-      deadlineAt: new Date(tab.manualDeadlineAt).toISOString(),
+      deadlineAt: tab.manualDeadlineAt ? new Date(tab.manualDeadlineAt).toISOString() : null,
       state: tab.manualState,
     };
   }
@@ -2273,7 +2256,6 @@ class BrowserHost {
     }
     this.writeManualPrompt(tab.prompt);
     if (tab.manualState === "awaiting-user") {
-      tab.manualDeadlineAt = Date.now() + tab.manualSubmitTimeoutMs;
       this.armManualTurnDeadline(tab);
       this.publishState?.(this.snapshot());
     }
