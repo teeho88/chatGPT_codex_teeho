@@ -55,9 +55,13 @@ Hai lệnh `git diff --quiet` phải trả về mã `0`. Nếu không, commit ho
 git fetch upstream --prune
 git log --oneline --decorate master..upstream/main
 git rev-list --left-right --count master...upstream/main
+git rev-list --left-right --count origin/master...master
 ```
 
-Nếu log không có commit nào, `master` đã mới nhất. Không cần merge hay push.
+Nếu log `master..upstream/main` không có commit nào, `master` đã mới nhất so với
+upstream và không cần merge. Tuy nhiên vẫn kiểm tra kết quả
+`origin/master...master`: nếu số bên phải lớn hơn `0`, local `master` còn commit
+chưa publish và vẫn phải thực hiện bước push ở mục 8.
 
 ## 4. Tạo backup và merge an toàn
 
@@ -84,10 +88,14 @@ Nếu Git nói merge thành công, kiểm tra các tùy biến trước khi comm
 ```powershell
 rg -n "UserWaitStore|userWaitStatePath" src
 rg -n "CHATGPT_RESPONSE_DOM_GRACE_MS|CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS" src/adapters/chatgpt-web/browser-worker.ts
+rg -n "CHATGPT_WEB_MCP_APPROVAL_PROGRESS_MS|chatGptMcpInvocationTimeout|waitsForUserApproval|startApprovalProgress" src/adapters/chatgpt-web/mcp-server.ts
 git diff --cached --stat
 ```
 
 Các tùy biến cần giữ gồm checkpoint Zero Risk user-wait, `userWaitStatePath`, timeout phản hồi/multipart, Windows packaging, metadata launcher và tài liệu local.
+Ngoài ra phải giữ cơ chế approval-wait của MCP: các lệnh `require_escalated` không
+dùng timeout broker 90 giây thông thường, bị giới hạn bởi turn TTL khi có, và gửi
+progress notification định kỳ khi client cung cấp `progressToken`.
 
 ## 5. Xử lý xung đột
 
@@ -132,7 +140,7 @@ Dùng Bun đã cài trong PATH. Nếu không có, dùng Bun runtime đi kèm lau
 ```powershell
 bun install --frozen-lockfile
 bun run typecheck
-bun test tests/user-wait-store.test.ts tests/zero-risk-mcp-lifecycle.test.ts tests/browser-worker-contract.test.ts
+bun test tests/user-wait-store.test.ts tests/zero-risk-mcp-lifecycle.test.ts tests/browser-worker-contract.test.ts tests/chatgpt-web-harness.test.ts
 ```
 
 Fallback khi `bun` không nằm trong PATH:
@@ -140,7 +148,7 @@ Fallback khi `bun` không nằm trong PATH:
 ```powershell
 & ".\launcher\build\runtime\runtime\bun.exe" install --frozen-lockfile
 & ".\launcher\build\runtime\runtime\bun.exe" run typecheck
-& ".\launcher\build\runtime\runtime\bun.exe" test tests/user-wait-store.test.ts tests/zero-risk-mcp-lifecycle.test.ts tests/browser-worker-contract.test.ts
+& ".\launcher\build\runtime\runtime\bun.exe" test tests/user-wait-store.test.ts tests/zero-risk-mcp-lifecycle.test.ts tests/browser-worker-contract.test.ts tests/chatgpt-web-harness.test.ts
 ```
 
 ## 7. Commit merge
