@@ -8,6 +8,10 @@ Tài liệu này áp dụng cho repository hiện tại trên Windows PowerShell
 
 Quy trình luôn tạo nhánh backup, hợp nhất upstream trước, kiểm thử, sau đó mới publish.
 
+> **Quy tắc local:** không đưa các file README từ upstream vào repository này. Các file
+> `README.md`, `README.ja.md`, `README.ko.md`, `README.zh-CN.md` và các biến thể
+> `README*.md` khác phải tiếp tục ở trạng thái không được track/xóa khỏi nhánh `master`.
+
 ## 1. Thiết lập một lần
 
 Kiểm tra remote hiện có:
@@ -32,6 +36,9 @@ git remote set-url --push upstream https://github.com/miuuyy/codex-chatgpt-web.g
 ## 2. Kiểm tra trước khi cập nhật
 
 Chỉ bắt đầu khi không có thay đổi tracked chưa commit. Các tệp local không theo dõi như `.agent-memory/` có thể giữ nguyên.
+
+Nếu working tree đang có các README bị xóa nhưng chưa commit, commit việc xóa đó trước
+khi merge. Không restore hoặc checkout README từ upstream.
 
 ```powershell
 git switch master
@@ -61,6 +68,16 @@ $backup = "backup/pre-upstream-$(Get-Date -Format yyyyMMdd-HHmmss)"
 git branch $backup master
 git merge --no-commit --no-ff upstream/main
 ```
+
+Nếu merge tạo lại hoặc báo xung đột modify/delete với README, luôn giữ phía local là
+**xóa README**:
+
+```powershell
+git rm --ignore-unmatch README.md README.ja.md README.ko.md README.zh-CN.md
+git ls-files "README*.md"
+```
+
+Lệnh `git ls-files "README*.md"` phải không in ra file nào trước khi commit merge.
 
 Nếu Git nói merge thành công, kiểm tra các tùy biến trước khi commit:
 
@@ -94,7 +111,11 @@ Khi không còn xung đột:
 
 ```powershell
 git diff --cached --check
+git ls-files "README*.md"
 ```
+
+Kiểm tra thứ hai phải không in ra file nào. Nếu có README được upstream thêm mới,
+xóa nó khỏi index/working tree trước khi tiếp tục.
 
 Nếu nhận ra merge không an toàn, quay lại đúng trạng thái trước merge:
 
