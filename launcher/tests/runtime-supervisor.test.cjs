@@ -1350,6 +1350,59 @@ test("crash-loop recovery cools down without being permanently disabled", () => 
   }
 });
 
+test("system wake bypasses tunnel recovery cooldown and coalesces duplicate wake events", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-wake-recovery-"));
+  const descriptorPath = path.join(root, "runtime", "launcher-browser.json");
+  fs.mkdirSync(path.dirname(descriptorPath), { recursive: true });
+  const config = launcherConfig(descriptorPath, {
+    mode: "full",
+    tunnel: {
+      binaryPath: path.join(root, "bin", "tunnel-client"),
+      tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
+      runtimeKeyFile: path.join(root, "secrets", "runtime.key"),
+      profileDir: path.join(root, "tunnel", "profiles"),
+      profileName: "codex-chatgpt-web",
+      alias: "codex-chatgpt-web",
+    },
+  });
+  fs.writeFileSync(path.join(root, "config.json"), `${JSON.stringify(config)}\n`);
+  const events = [];
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: {
+      info(event, detail) { events.push({ event, detail }); },
+      warn() {},
+      error() {},
+    },
+    sourceRoot: root,
+    coreHome: root,
+    browserDescriptorPath: descriptorPath,
+  });
+  let recoveries = 0;
+  let releaseRecovery;
+  supervisor.recover = async (name) => {
+    assert.equal(name, "tunnel");
+    recoveries += 1;
+    await new Promise((resolve) => { releaseRecovery = resolve; });
+  };
+  supervisor.restartTimers.tunnel = setTimeout(() => {}, 60_000);
+  try {
+    const first = supervisor.recoverTunnelAfterSystemWake("resume");
+    const second = supervisor.recoverTunnelAfterSystemWake("unlock-screen");
+    assert.equal(first, second);
+    assert.equal(recoveries, 1);
+    assert.equal(supervisor.restartTimers.tunnel, null);
+    assert.equal(events.some((record) => record.event === "runtime.tunnel_wake_recovery_started"), true);
+    releaseRecovery();
+    await first;
+    assert.equal(supervisor.activeRecoveries.tunnel, null);
+  } finally {
+    if (releaseRecovery) releaseRecovery();
+    clearTimeout(supervisor.restartTimers.tunnel);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("launcher supervisor refuses shutdown while a Codex turn is active and compensates the drain", async () => {
   const actions = [];
   const supervisor = new RuntimeSupervisor({

@@ -24,6 +24,7 @@ const TUNNEL_HEALTH_POLL_INTERVAL_MS = 1_000;
 const TUNNEL_MONITOR_INTERVAL_MS = 10_000;
 const TUNNEL_MONITOR_FAILURE_THRESHOLD = 3;
 const TUNNEL_MCP_FAILURE_RECENCY_MS = 2 * 60_000;
+const SYSTEM_WAKE_RECOVERY_DEDUP_MS = 2_000;
 const BOOT_TIME_CLOCK_TOLERANCE_MS = 5_000;
 const CURRENT_BOOT_STARTED_AT_MS = Date.now() - (os.uptime() * 1_000);
 
@@ -359,6 +360,7 @@ class RuntimeSupervisor {
     this.stopPromise = null;
     this.restartHistory = { daemon: [], tunnel: [] };
     this.restartTimers = { daemon: null, tunnel: null };
+    this.activeRecoveries = { daemon: null, tunnel: null };
     this.tunnelMonitorTimer = null;
     this.tunnelMonitorInFlight = false;
     this.tunnelMonitorFailures = 0;
@@ -370,6 +372,7 @@ class RuntimeSupervisor {
     this.restartableChildren = new WeakSet();
     this.lastChildFailure = { daemon: null, tunnel: null };
     this.lastChildOutput = { daemon: null, tunnel: null };
+    this.lastSystemWakeTunnelRecoveryAt = 0;
   }
 
   readConfig() {
@@ -1329,14 +1332,50 @@ class RuntimeSupervisor {
     }
     this.restartTimers[name] = setTimeout(() => {
       this.restartTimers[name] = null;
-      const recovery = this.recover(name).catch((error) => {
-        const message = errorMessage(error);
-        this.logger.error(`runtime.${name}_recovery_failed`, { message });
-        if (this.tryWriteState("failed", message)) this.scheduleRecovery(name);
-      });
-      this.recoveryTasks.add(recovery);
-      void recovery.finally(() => this.recoveryTasks.delete(recovery));
+      void this.startRecovery(name);
     }, delay);
+  }
+
+  startRecovery(name) {
+    if (this.activeRecoveries[name]) return this.activeRecoveries[name];
+    const recovery = this.recover(name).catch((error) => {
+      const message = errorMessage(error);
+      this.logger.error(`runtime.${name}_recovery_failed`, { message });
+      if (this.tryWriteState("failed", message)) this.scheduleRecovery(name);
+    });
+    this.activeRecoveries[name] = recovery;
+    this.recoveryTasks.add(recovery);
+    void recovery.finally(() => {
+      if (this.activeRecoveries[name] === recovery) this.activeRecoveries[name] = null;
+      this.recoveryTasks.delete(recovery);
+    });
+    return recovery;
+  }
+
+  recoverTunnelAfterSystemWake(reason = "resume") {
+    if (this.stopping || this.startPromise) return this.activeRecoveries.tunnel;
+    let config;
+    try {
+      config = this.readConfig();
+    } catch (error) {
+      this.logger.warn("runtime.tunnel_wake_recovery_skipped", {
+        reason,
+        message: errorMessage(error),
+      });
+      return null;
+    }
+    if (!config || config.mode !== "full") return null;
+    if (this.activeRecoveries.tunnel) return this.activeRecoveries.tunnel;
+    const now = Date.now();
+    if (now - this.lastSystemWakeTunnelRecoveryAt < SYSTEM_WAKE_RECOVERY_DEDUP_MS) return null;
+    this.lastSystemWakeTunnelRecoveryAt = now;
+    if (this.restartTimers.tunnel) {
+      clearTimeout(this.restartTimers.tunnel);
+      this.restartTimers.tunnel = null;
+    }
+    this.stopTunnelMonitor();
+    this.logger.info("runtime.tunnel_wake_recovery_started", { reason });
+    return this.startRecovery("tunnel");
   }
 
   async recover(name) {

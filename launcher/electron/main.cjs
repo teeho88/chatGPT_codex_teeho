@@ -14,6 +14,7 @@ const {
   Menu,
   nativeImage,
   nativeTheme,
+  powerMonitor,
   screen,
   session,
   shell,
@@ -1158,6 +1159,10 @@ async function start() {
       if (browserHost && !runtimeHost?.currentOperation()) syncFreshConversationPreference(stateStore, config);
     },
   });
+  if (powerMonitor && typeof powerMonitor.on === "function") {
+    powerMonitor.on("resume", () => { void runtimeSupervisor?.recoverTunnelAfterSystemWake("resume"); });
+    powerMonitor.on("unlock-screen", () => { void runtimeSupervisor?.recoverTunnelAfterSystemWake("unlock-screen"); });
+  }
   runtimeHost = new RuntimeHost({
     app,
     logger,
