@@ -1315,15 +1315,18 @@ class RuntimeSupervisor {
     if (this.stopping) return;
     if (this.restartTimers[name]) return;
     const attempts = this.recordRestart(name);
+    let delay = Math.min(attempts * 1_000, 5_000);
     if (attempts > MAX_RESTARTS_PER_WINDOW) {
       const cause = this.lastChildFailure[name];
-      const message = `${name} stopped more than ${MAX_RESTARTS_PER_WINDOW} times in 60 seconds; automatic restart is disabled`
+      delay = Math.max(
+        1_000,
+        (this.restartHistory[name][0] ?? Date.now()) + RESTART_WINDOW_MS - Date.now(),
+      );
+      const message = `${name} stopped more than ${MAX_RESTARTS_PER_WINDOW} times in 60 seconds; automatic restart will retry after cooldown`
         + (cause ? `; last failure: ${cause}` : "");
-      this.tryWriteState("failed", message);
-      this.publishOperation?.({ name: "runtime-recovery", status: "failed", message });
-      return;
+      if (!this.tryWriteState("degraded", message)) return;
+      this.publishOperation?.({ name: "runtime-recovery", status: "running", message });
     }
-    const delay = Math.min(attempts * 1_000, 5_000);
     this.restartTimers[name] = setTimeout(() => {
       this.restartTimers[name] = null;
       const recovery = this.recover(name).catch((error) => {

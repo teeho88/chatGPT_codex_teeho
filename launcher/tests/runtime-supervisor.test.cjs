@@ -1321,7 +1321,7 @@ test("launcher shutdown reacquires a managed tunnel that was between monitor and
   }
 });
 
-test("crash-loop diagnostics include the last redacted child failure", () => {
+test("crash-loop recovery cools down without being permanently disabled", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-crash-loop-diagnostic-"));
   const operations = [];
   const supervisor = new RuntimeSupervisor({
@@ -1339,11 +1339,13 @@ test("crash-loop diagnostics include the last redacted child failure", () => {
   supervisor.lastChildFailure.tunnel = "tunnel exited (1): invalid profile for [tunnel-id]";
   try {
     supervisor.scheduleRecovery("tunnel");
-    const failure = operations.at(-1);
-    assert.equal(failure.status, "failed");
-    assert.match(failure.message, /automatic restart is disabled/);
-    assert.match(failure.message, /last failure: tunnel exited \(1\): invalid profile for \[tunnel-id\]/);
+    const recovery = operations.at(-1);
+    assert.equal(recovery.status, "running");
+    assert.match(recovery.message, /automatic restart will retry after cooldown/);
+    assert.match(recovery.message, /last failure: tunnel exited \(1\): invalid profile for \[tunnel-id\]/);
+    assert.notEqual(supervisor.restartTimers.tunnel, null);
   } finally {
+    clearTimeout(supervisor.restartTimers.tunnel);
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
