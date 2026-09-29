@@ -300,7 +300,11 @@ export function installCodexIntegration(
       } : {}),
       ...(existing.format ? { format: existing.format } : {}),
     };
-    writeIntegrationState(updated, { path: configPath, data: patched.text }, [getCodexModelsCachePath()]);
+    writeIntegrationState(updated, {
+      path: configPath,
+      data: patched.text,
+      expectedData: configExists ? currentText : null,
+    }, [getCodexModelsCachePath()]);
     return updated;
   }
 
@@ -340,7 +344,11 @@ export function installCodexIntegration(
     } : {}),
     format: textFormat(baseline),
   };
-  writeIntegrationState(journal, { path: configPath, data: patched.text }, [getCodexModelsCachePath()]);
+  writeIntegrationState(journal, {
+    path: configPath,
+    data: patched.text,
+    expectedData: configExists ? currentText : null,
+  }, [getCodexModelsCachePath()]);
   if (existing?.version === 2 && existsSync(existing.catalogPath)) rmSync(existing.catalogPath);
   return journal;
 }
@@ -370,7 +378,11 @@ export function deactivateCodexIntegration(): SetCodexIntegrationActiveResult {
       || existing.version === 7 || existing.version === 8 || existing.version === 9 || existing.version === 10
       ? { ...existing, active: false }
       : { ...existing, version: 4, active: false };
-  writeIntegrationState(disconnected, { path: existing.configPath, data: restored }, [getCodexModelsCachePath()]);
+  writeIntegrationState(disconnected, {
+    path: existing.configPath,
+    data: restored,
+    expectedData: current,
+  }, [getCodexModelsCachePath()]);
   return { changed: true, active: false };
 }
 
@@ -437,7 +449,11 @@ export function activateCodexIntegration(): SetCodexIntegrationActiveResult {
     } : {}),
     ...(existing.format ? { format: existing.format } : {}),
   };
-  writeIntegrationState(connected, { path: existing.configPath, data: route.text }, [getCodexModelsCachePath()]);
+  writeIntegrationState(connected, {
+    path: existing.configPath,
+    data: route.text,
+    expectedData: current,
+  }, [getCodexModelsCachePath()]);
   return { changed: true, active: true };
 }
 

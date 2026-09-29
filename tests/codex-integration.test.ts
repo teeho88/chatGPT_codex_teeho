@@ -911,6 +911,60 @@ describe("reversible native Codex route integration", () => {
     expect(readFileSync(configPath, "utf8")).toBe('model = "gpt-5.6-sol"\n');
   });
 
+  test("config compensation refuses to overwrite data newer than the patch baseline", () => {
+    const { root } = fixture();
+    const configPath = join(root, "config.toml");
+    writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
+
+    expect(() => writeFilesWithCompensation([{
+      path: configPath,
+      data: 'model = "chatgpt-web/medium"\n',
+      expectedData: 'model = "gpt-5.5"\n',
+    }])).toThrow("refusing to overwrite newer data");
+
+    expect(readFileSync(configPath, "utf8")).toBe('model = "gpt-5.6-sol"\n');
+  });
+
+  test("update preserves personal settings added after the initial install", () => {
+    const { codexHome } = fixture();
+    const configPath = join(codexHome, "config.toml");
+    const original = [
+      'model = "gpt-5.6-sol"',
+      'model_reasoning_effort = "high" # personal top-level setting',
+      "",
+      "[features]",
+      "goals = true # personal feature setting",
+      "",
+    ].join("\n");
+    writeFileSync(configPath, original);
+    const first = nativeConfig("browser-only");
+    installCodexIntegration(first);
+
+    const installed = readFileSync(configPath, "utf8");
+    const edited = installed
+      .replace(
+        'model_reasoning_effort = "high" # personal top-level setting',
+        'model_reasoning_effort = "xhigh" # changed after install',
+      )
+      + '\n[mcp_servers.personal]\ncommand = "personal-mcp"\nargs = ["--keep-me"]\n';
+    writeFileSync(configPath, edited);
+
+    const second = nativeConfig("browser-only");
+    second.port = 17842;
+    installCodexIntegration(second, { replaceExistingRoute: true });
+    const updated = readFileSync(configPath, "utf8");
+    expect(updated).toContain('openai_base_url = "http://127.0.0.1:17842/v1"');
+    expect(updated).toContain('model_reasoning_effort = "xhigh" # changed after install');
+    expect(updated).toContain("goals = true # personal feature setting");
+    expect(updated).toContain('[mcp_servers.personal]\ncommand = "personal-mcp"\nargs = ["--keep-me"]');
+
+    uninstallCodexIntegration();
+    const restored = readFileSync(configPath, "utf8");
+    expect(restored).toContain('model_reasoning_effort = "xhigh" # changed after install');
+    expect(restored).toContain("goals = true # personal feature setting");
+    expect(restored).toContain('[mcp_servers.personal]\ncommand = "personal-mcp"\nargs = ["--keep-me"]');
+  });
+
   test("upgrades the released v9 route by adding the trusted Interrupt lifecycle hook", () => {
     const { codexHome } = fixture();
     const configPath = join(codexHome, "config.toml");
