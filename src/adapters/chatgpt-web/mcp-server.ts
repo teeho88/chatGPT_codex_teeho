@@ -41,6 +41,7 @@ const jsonArgumentsSchema = z.record(z.string(), z.unknown()).default({});
 export const CHATGPT_WEB_AGENT_WAIT_POLL_MS = 30_000;
 const AGENT_WAIT_TRANSPORT_RULE = `ChatGPT Web transport rule: wait for exactly ${CHATGPT_WEB_AGENT_WAIT_POLL_MS / 1_000} seconds per call, matching the Codex default, then release the MCP channel so spawned Web agents can use their own tools. A wait timeout is not task completion; check agent progress and wait again if needed. Keep the native tool's declared arguments.`;
 const CHATGPT_WEB_MCP_APPROVAL_PROGRESS_MS = 30_000;
+const CHATGPT_WEB_MCP_APPROVAL_RECONNECT_GRACE_MS = 60_000;
 // Ordinary native calls settle before the tunnel's command-response deadline so an abandoned call
 // becomes an MCP error instead of poisoning the long-lived stdio transport. Explicit approval waits
 // are different: user think time must not retire the turn binding, so they use only the turn TTL.
@@ -82,6 +83,13 @@ function approvalProgressIntervalMs(): number {
     : CHATGPT_WEB_MCP_APPROVAL_PROGRESS_MS;
 }
 
+function approvalReconnectGraceMs(): number {
+  const configured = Number(process.env.CHATGPT_WEB_MCP_APPROVAL_RECONNECT_GRACE_MS);
+  return Number.isFinite(configured) && configured > 0
+    ? Math.max(1, Math.floor(configured))
+    : CHATGPT_WEB_MCP_APPROVAL_RECONNECT_GRACE_MS;
+}
+
 function startApprovalProgress(extra?: McpRequestExtra): () => void {
   const meta = extra?._meta && typeof extra._meta === "object" && !Array.isArray(extra._meta)
     ? extra._meta as Record<string, unknown>
@@ -112,6 +120,28 @@ function startApprovalProgress(extra?: McpRequestExtra): () => void {
 
 function scopeHash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+function invocationId(bindingId: string, toolName: string, extra?: McpRequestExtra): string | undefined {
+  if (!extra) return undefined;
+  const meta = extra._meta && typeof extra._meta === "object" && !Array.isArray(extra._meta)
+    ? extra._meta as Record<string, unknown>
+    : undefined;
+  const progressToken = meta?.progressToken;
+  const identity = JSON.stringify({
+    bindingId,
+    toolName,
+    ...(typeof progressToken === "string" || typeof progressToken === "number"
+      ? { progressToken }
+      : { requestId: String(extra.requestId), sessionId: extra.sessionId ?? null }),
+  });
+  return `invocation_${createHash("sha256").update(identity).digest("base64url")}`;
+}
+
+function recoverableApprovalDisconnect(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === "AbortError") return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("turn broker unavailable") || message.includes("turn broker closed the connection");
 }
 
 function requestScopeSummary(extra: McpRequestExtra): string {
@@ -491,6 +521,7 @@ export async function runChatGptMcpServer(options: {
   contract?: ChatGptMcpContract;
 }): Promise<void> {
   const contract = options.contract ?? "native";
+  const approvalReconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const server = new McpServer(
     { name: contract === "safe" ? "codex-safe" : "codex-native", version: VERSION },
     contract === "safe" ? { instructions: ZERO_RISK_MCP_INSTRUCTIONS } : undefined,
@@ -600,16 +631,42 @@ export async function runChatGptMcpServer(options: {
       || payload.arguments?.sandbox_permissions === "require_escalated";
     const timeoutMs = chatGptMcpInvocationTimeout(bound, Date.now(), waitsForUserApproval);
     const stopApprovalProgress = waitsForUserApproval ? startApprovalProgress(requestExtra) : undefined;
+    const toolName = wireName(tool);
+    const durableInvocationId = invocationId(bindingId, toolName, requestExtra);
+    if (durableInvocationId) {
+      const reconnectTimer = approvalReconnectTimers.get(durableInvocationId);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      approvalReconnectTimers.delete(durableInvocationId);
+    }
     try {
       const response = await callTurnBroker<BrokerToolResult>(options.brokerSocketPath, {
         method: "invoke",
         bindingId,
-        wireName: wireName(tool),
+        wireName: toolName,
+        ...(durableInvocationId ? { invocationId: durableInvocationId } : {}),
+        waitsForUserApproval,
         freeform: tool.freeform === true,
         ...(tool.freeform ? { input: payload.input ?? "" } : { arguments: payload.arguments ?? {} }),
       }, timeoutMs, signal);
       return asMcpResult(response);
     } catch (error) {
+      if (waitsForUserApproval && recoverableApprovalDisconnect(error)) {
+        console.error(`[chatgpt-web-mcp] approval_transport_detached ${JSON.stringify({
+          bindingHash: scopeHash(bindingId),
+          invocationHash: durableInvocationId ? scopeHash(durableInvocationId) : null,
+          requestId: requestExtra ? String(requestExtra.requestId) : null,
+          reason: error instanceof Error ? error.name : "Error",
+        })}`);
+        if (durableInvocationId) {
+          const reconnectTimer = setTimeout(() => {
+            approvalReconnectTimers.delete(durableInvocationId);
+            void callTurnBroker(options.brokerSocketPath, { method: "release", bindingId }).catch(() => {});
+          }, approvalReconnectGraceMs());
+          reconnectTimer.unref?.();
+          approvalReconnectTimers.set(durableInvocationId, reconnectTimer);
+        }
+        throw error;
+      }
       // A cancelled/timed-out MCP request no longer has a consumer for the native result. Revoke
       // the whole turn capability so the broker drops the pending invocation and every later call
       // from that abandoned ChatGPT response fails explicitly against its retired binding.
@@ -625,7 +682,6 @@ export async function runChatGptMcpServer(options: {
         );
       }
       if (error instanceof TurnBrokerTimeoutError) {
-        const toolName = wireName(tool);
         console.error(
           `[chatgpt-web-mcp] ${toolName} did not complete within ${timeoutMs}ms; retired its turn binding`,
         );

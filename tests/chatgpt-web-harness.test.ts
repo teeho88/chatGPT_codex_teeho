@@ -2162,7 +2162,9 @@ describe("ChatGPT outer-native harness v4", () => {
     const logger = spyOn(console, "info").mockImplementation((...args) => {
       const line = args.join(" ");
       logs.push(line);
-      if (line.includes("broker trace=parallel-delivery queued call=") && ++queuedCalls === 2) resolveQueued();
+      if (line.includes("broker invocation_queued")
+        && line.includes('"traceId":"parallel-delivery"')
+        && ++queuedCalls === 2) resolveQueued();
     });
     try {
       const token = await broker.register(extractChatGptTurnEnvironment(parsed(environmentXml)), 10_000, "parallel-delivery");
@@ -3343,15 +3345,28 @@ describe("ChatGPT outer-native harness v4", () => {
     const broker = TurnBroker.forSocket(socketPath);
     const environment = extractChatGptTurnEnvironment(parsed(environmentXml));
     environment.tools = [
-      { name: "exec_command", description: "Run a Codex command", parameters: { type: "object" } },
+      {
+        name: "exec_command",
+        description: "Run a Codex command",
+        parameters: {
+          type: "object",
+          properties: { sandbox_permissions: { type: "string" } },
+        },
+      },
     ];
     const abandonedToken = await broker.register(environment, 3_000);
+    const approvalToken = await broker.register(environment);
+    const expiredApprovalToken = await broker.register(environment);
     const replacementToken = await broker.register(environment);
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: ["src/cli.ts", "mcp", "--broker-socket", socketPath],
       cwd: process.cwd(),
       stderr: "pipe",
+      env: {
+        ...getDefaultEnvironment(),
+        CHATGPT_WEB_MCP_APPROVAL_RECONNECT_GRACE_MS: "40",
+      },
     });
     const client = new Client({ name: "codex-chatgpt-web-mcp-abort-test", version: "1.0.0" });
 
@@ -3384,6 +3399,40 @@ describe("ChatGPT outer-native harness v4", () => {
       } while (Date.now() < deadline);
       expect(String(abandonedError)).toContain("already finished");
 
+      const approvalAbort = new AbortController();
+      const approvalCall = {
+        name: "codex_exec",
+        arguments: {
+          turn_token: approvalToken,
+          cmd: "approval gated command",
+          sandbox_permissions: "require_escalated",
+        },
+        _meta: { progressToken: "approval-reconnect" },
+      };
+      const approval = client.callTool(approvalCall, undefined, { signal: approvalAbort.signal });
+      const [approvalRequest] = await broker.nextToolBatch(approvalToken);
+      approvalAbort.abort(new Error("synthetic approval transport loss"));
+      await expect(approval).rejects.toBeDefined();
+      await expect(callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token: approvalToken }))
+        .resolves.toMatchObject({ bindingId: expect.any(String) });
+      const approvalRetry = client.callTool(approvalCall);
+      await Bun.sleep(25);
+      broker.completeTool(approvalToken, approvalRequest!.callId, toolResult({ output: "approved", exit_code: 0 }));
+      expect((await approvalRetry).structuredContent).toEqual({ output: "approved", exit_code: 0 });
+
+      const expiredAbort = new AbortController();
+      const expiredApproval = client.callTool({
+        ...approvalCall,
+        arguments: { ...approvalCall.arguments, turn_token: expiredApprovalToken },
+        _meta: { progressToken: "approval-expired" },
+      }, undefined, { signal: expiredAbort.signal });
+      await broker.nextToolBatch(expiredApprovalToken);
+      expiredAbort.abort(new Error("synthetic approval reconnect timeout"));
+      await expect(expiredApproval).rejects.toBeDefined();
+      await Bun.sleep(100);
+      await expect(callTurnBroker(socketPath, { method: "claim", token: expiredApprovalToken }))
+        .rejects.toThrow("already finished");
+
       const inventory = await client.callTool({
         name: "codex_tool_inventory",
         arguments: { turn_token: replacementToken, query: "exec_command", include_schema: false },
@@ -3395,6 +3444,8 @@ describe("ChatGPT outer-native harness v4", () => {
     } finally {
       await client.close().catch(() => {});
       broker.revoke(abandonedToken);
+      broker.revoke(approvalToken);
+      broker.revoke(expiredApprovalToken);
       broker.revoke(replacementToken);
       await broker.close();
     }

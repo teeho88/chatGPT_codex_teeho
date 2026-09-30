@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from 
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { callTurnBroker, TurnBroker } from "../src/adapters/chatgpt-web/turn-broker";
+import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
 import { defaultBrokerEndpoint, isWindowsPipeEndpoint } from "../src/config";
 
 test.skipIf(process.platform === "win32")("closing a rejected broker leaves the live socket reachable", async () => {
@@ -443,3 +443,48 @@ test("turn broker names the finished turn that owns a replayed handle", async ()
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a detached invocation reattaches by identity without dispatching the native action twice", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-broker-reattach-"));
+  const socketPath = defaultBrokerEndpoint(root);
+  const broker = TurnBroker.forSocket(socketPath);
+  const token = await broker.register({
+    cwd: root,
+    roots: [root],
+    writableRoots: [root],
+    sandboxPolicy: { type: "dangerFullAccess" },
+    tools: [],
+  }, 60_000, "turn-reattach");
+  try {
+    const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
+    const request = {
+      method: "invoke" as const,
+      bindingId: claimed.bindingId,
+      invocationId: "invocation_abcdefghijklmnop",
+      wireName: "exec_command",
+      waitsForUserApproval: true,
+      arguments: { cmd: "approval gated command" },
+    };
+    const detached = new AbortController();
+    const first = callTurnBroker<BrokerToolResult>(socketPath, request, null, detached.signal);
+    const [nativeCall] = await broker.nextToolBatch(token);
+    detached.abort();
+    await expect(first).rejects.toThrow("aborted");
+
+    const reattached = callTurnBroker<BrokerToolResult>(socketPath, request, null);
+    await Bun.sleep(25);
+    const result: BrokerToolResult = {
+      content: [{ type: "text", text: "approved" }],
+      structuredContent: { output: "approved", exit_code: 0 },
+    };
+    broker.completeTool(token, nativeCall!.callId, result);
+    await expect(reattached).resolves.toEqual(result);
+    await expect(callTurnBroker<BrokerToolResult>(socketPath, request)).resolves.toEqual(result);
+    await expect(callTurnBroker(socketPath, { ...request, arguments: { cmd: "different command" } }))
+      .rejects.toThrow("reused with a different native action");
+  } finally {
+    broker.revoke(token);
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 10_000);
