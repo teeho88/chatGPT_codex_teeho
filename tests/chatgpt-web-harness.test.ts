@@ -3365,7 +3365,7 @@ describe("ChatGPT outer-native harness v4", () => {
       stderr: "pipe",
       env: {
         ...getDefaultEnvironment(),
-        CHATGPT_WEB_MCP_APPROVAL_RECONNECT_GRACE_MS: "40",
+        CHATGPT_WEB_MCP_APPROVAL_RECONNECT_GRACE_MS: "250",
       },
     });
     const client = new Client({ name: "codex-chatgpt-web-mcp-abort-test", version: "1.0.0" });
@@ -3429,7 +3429,7 @@ describe("ChatGPT outer-native harness v4", () => {
       await broker.nextToolBatch(expiredApprovalToken);
       expiredAbort.abort(new Error("synthetic approval reconnect timeout"));
       await expect(expiredApproval).rejects.toBeDefined();
-      await Bun.sleep(100);
+      await Bun.sleep(350);
       await expect(callTurnBroker(socketPath, { method: "claim", token: expiredApprovalToken }))
         .rejects.toThrow("already finished");
 
@@ -3447,6 +3447,53 @@ describe("ChatGPT outer-native harness v4", () => {
       broker.revoke(approvalToken);
       broker.revoke(expiredApprovalToken);
       broker.revoke(replacementToken);
+      await broker.close();
+    }
+  }, 10_000);
+
+  test("sequential native and approval calls sharing an MCP progress token keep the active turn", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h3-mcp-progress-reuse-${process.pid}-${Date.now()}`);
+    const broker = TurnBroker.forSocket(socketPath);
+    const environment = extractChatGptTurnEnvironment(parsed(environmentXml));
+    environment.tools = [{
+      name: "exec_command",
+      description: "Run a Codex command",
+      parameters: { type: "object", properties: { sandbox_permissions: { type: "string" } } },
+    }];
+    const token = await broker.register(environment);
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: ["src/cli.ts", "mcp", "--broker-socket", socketPath],
+      cwd: process.cwd(),
+      stderr: "pipe",
+    });
+    const client = new Client({ name: "codex-chatgpt-web-progress-reuse-test", version: "1.0.0" });
+    try {
+      await client.connect(transport);
+      for (const [cmd, approval] of [["first", false], ["second", false], ["third", true], ["fourth", true]] as const) {
+        const pending = client.callTool({
+          name: "codex_exec",
+          arguments: { turn_token: token, cmd, ...(approval ? { sandbox_permissions: "require_escalated" } : {}) },
+          _meta: { progressToken: "shared-progress-token" },
+        });
+        const [request] = await Promise.race([
+          broker.nextToolBatch(token),
+          pending.then(response => {
+            throw new Error(`codex_exec settled before reaching broker: ${JSON.stringify(response.content)}`);
+          }),
+        ]);
+        expect(request).toMatchObject({
+          wireName: "exec_command",
+          arguments: { cmd, ...(approval ? { sandbox_permissions: "require_escalated" } : {}) },
+        });
+        broker.completeTool(token, request!.callId, toolResult({ output: cmd, exit_code: 0 }));
+        expect((await pending).structuredContent).toEqual({ output: cmd, exit_code: 0 });
+      }
+      await expect(callTurnBroker(socketPath, { method: "claim", token }))
+        .resolves.toMatchObject({ bindingId: expect.any(String) });
+    } finally {
+      await client.close().catch(() => {});
+      broker.revoke(token);
       await broker.close();
     }
   }, 10_000);

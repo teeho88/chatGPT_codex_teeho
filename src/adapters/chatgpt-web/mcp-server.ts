@@ -122,7 +122,12 @@ function scopeHash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
 }
 
-function invocationId(bindingId: string, toolName: string, extra?: McpRequestExtra): string | undefined {
+function invocationId(
+  bindingId: string,
+  toolName: string,
+  payload: { arguments?: Record<string, unknown>; input?: string },
+  extra?: McpRequestExtra,
+): string | undefined {
   if (!extra) return undefined;
   const meta = extra._meta && typeof extra._meta === "object" && !Array.isArray(extra._meta)
     ? extra._meta as Record<string, unknown>
@@ -131,6 +136,7 @@ function invocationId(bindingId: string, toolName: string, extra?: McpRequestExt
   const identity = JSON.stringify({
     bindingId,
     toolName,
+    payload,
     ...(typeof progressToken === "string" || typeof progressToken === "number"
       ? { progressToken }
       : { requestId: String(extra.requestId), sessionId: extra.sessionId ?? null }),
@@ -632,7 +638,9 @@ export async function runChatGptMcpServer(options: {
     const timeoutMs = chatGptMcpInvocationTimeout(bound, Date.now(), waitsForUserApproval);
     const stopApprovalProgress = waitsForUserApproval ? startApprovalProgress(requestExtra) : undefined;
     const toolName = wireName(tool);
-    const durableInvocationId = invocationId(bindingId, toolName, requestExtra);
+    const durableInvocationId = waitsForUserApproval
+      ? invocationId(bindingId, toolName, payload, requestExtra)
+      : undefined;
     if (durableInvocationId) {
       const reconnectTimer = approvalReconnectTimers.get(durableInvocationId);
       if (reconnectTimer) clearTimeout(reconnectTimer);
