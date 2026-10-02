@@ -682,6 +682,9 @@ export async function runChatGptMcpServer(options: {
         await callTurnBroker(options.brokerSocketPath, {
           method: "release",
           bindingId,
+          ...(error instanceof TurnBrokerTimeoutError && typeof timeoutMs === "number" && timeoutMs > 0 ? {
+            failure: { code: "codex_tool_timeout" as const, tool: wireName(tool), timeoutMs },
+          } : {}),
         });
       } catch (releaseError) {
         throw new AggregateError(
