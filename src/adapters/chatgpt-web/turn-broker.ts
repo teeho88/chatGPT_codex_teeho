@@ -9,6 +9,7 @@ import {
 } from "./compaction-transaction";
 import type { ChatGptTurnEnvironment } from "./environment";
 import { chatGptToolTimeoutError } from "./adapter-error";
+import { subagentModelObservation } from "./mcp-observation";
 
 interface BrokerRetirementFailure {
   code: "codex_tool_timeout";
