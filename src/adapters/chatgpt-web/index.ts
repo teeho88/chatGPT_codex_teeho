@@ -413,7 +413,7 @@ export function createChatGptWebAdapter(
       : resolve(getConfigDir(), "runtime", "user-waits"),
   );
   const currentUsageInput = (parsed: CodexParsedRequest): CodexParsedRequest => (
-    parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID && !parsed._compactionRequest
+    parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID && !experimentalBiggerContext && !parsed._compactionRequest
       ? lunaCheckpointStore.apply(parsed).parsed
       : parsed
   );
@@ -438,6 +438,7 @@ export function createChatGptWebAdapter(
       : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, turnCapabilities);
     const identity = extractChatGptTurnIdentity(parsed);
     const captureLunaCheckpoint = parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID
+      && !experimentalBiggerContext
       && !parsed._compactionRequest
       && Boolean(identity.threadId && identity.turnId);
     const checkpointInput = captureLunaCheckpoint
@@ -445,8 +446,8 @@ export function createChatGptWebAdapter(
       : { parsed, applied: false };
     const conversationKey = !parsed._compactionRequest
       && !freshConversationPerTurn
-      && parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID
-      && mode.localTools
+      && (parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID || experimentalBiggerContext)
+      && (mode.localTools || (parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID && experimentalBiggerContext))
       && retainedLauncherDescriptor
       ? chatGptConversationKey(checkpointInput.parsed, executionNamespace)
       : undefined;
@@ -722,21 +723,19 @@ export function createChatGptWebAdapter(
       };
     }
     if (!mode.localTools) {
+      const prepareWith = async (input: CodexParsedRequest) => ({
+        ...compileChatGptWebPrompt(input, turnCapabilities, undefined, compileOptionsFor(input)),
+        release: () => {},
+      });
       const browserTurn = cancellableBrowserTurn(finalizeCheckpoint(worker.run({
         traceId,
         modelId: parsed.modelId,
         reasoning: parsed.options.reasoning,
         ...(parsed._chatgptModelFamily ? { modelFamily: parsed._chatgptModelFamily } : {}),
         capabilities: turnCapabilities,
-        prepare: async () => ({
-          ...compileChatGptWebPrompt(
-            checkpointInput.parsed,
-            turnCapabilities,
-            undefined,
-            compileOptionsFor(checkpointInput.parsed),
-          ),
-          release: () => {},
-        }),
+        prepare: () => prepareWith(checkpointInput.parsed),
+        ...(resumeInput ? { prepareResume: () => prepareWith(resumeInput) } : {}),
+        ...(retainConversation ? { retainConversation: true, conversationKey } : {}),
         abortSignal: browserAbort.signal,
         ...(parsed._compactionRequest ? { compaction: true } : {}),
         ...submissionLifecycle,
@@ -756,6 +755,8 @@ export function createChatGptWebAdapter(
         trace,
         text,
         usageInput: checkpointInput.parsed,
+        ...(conversationKey ? { conversationKey } : {}),
+        ...(releaseRetainedConversation ? { releaseRetainedConversation } : {}),
         submission,
         cancel: browserTurn.cancel,
       };
@@ -924,7 +925,7 @@ export function createChatGptWebAdapter(
           }
         }
         if (parsed._compactionRequest) {
-          const structuredCompactionRequired = parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID
+          const structuredCompactionRequired = (parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID || experimentalBiggerContext)
             && configuredCapabilities.localToolsEnabled;
           if (structuredCompactionRequired
             && (!retainedLauncherDescriptor || (!manualRequest && !structuredBroker))) {
@@ -1189,7 +1190,7 @@ export function createChatGptWebAdapter(
               const upstreamError = handoffError instanceof ChatGptWebAdapterError ? handoffError : undefined;
               emit({
                 type: "error",
-                message: upstreamError?.message ?? "ChatGPT did not complete the context handoff. Retry the task.",
+                message: upstreamError?.message ?? `ChatGPT did not complete the context handoff: ${handoffError.message}`,
                 status: upstreamError?.status ?? 409,
                 errorType: upstreamError?.errorType ?? "invalid_request_error",
                 code: upstreamError?.code ?? "compaction_handoff_failed",
@@ -1209,7 +1210,12 @@ export function createChatGptWebAdapter(
             return;
           }
           const responseExecutionKey = `${executionNamespace}:${chatGptCompactionSourceExecutionKey(parsed)}`;
-          await chatGptTurnSessions.retireAndWait(responseExecutionKey, incoming.abortSignal);
+          const sourceConversationKey = chatGptConversationKey(parsed, executionNamespace);
+          if (sourceConversationKey && chatGptTurnSessions.findConversationHead(sourceConversationKey)) {
+            await withAbort(chatGptTurnSessions.retireConversationAndWait(sourceConversationKey), incoming.abortSignal);
+          } else {
+            await chatGptTurnSessions.retireAndWait(responseExecutionKey, incoming.abortSignal);
+          }
         }
         const executionKey = `${executionNamespace}:${chatGptTurnExecutionKey(parsed)}`;
         const ownerKey = `${executionNamespace}:${chatGptThreadOwnershipKey(parsed)}`;
