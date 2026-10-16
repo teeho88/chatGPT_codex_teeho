@@ -42,7 +42,7 @@ jobs:
       - name: Verify launcher updater and release contracts
         shell: pwsh
         run: |
-          foreach ($testFile in @('launcher/tests/update.test.cjs', 'launcher/tests/packaging-contract.test.cjs', 'launcher/tests/source-update.test.cjs')) {
+          foreach ($testFile in @('launcher/tests/update.test.cjs', 'launcher/tests/packaging-contract.test.cjs', 'launcher/tests/source-update.test.cjs', 'launcher/tests/update-upstream-cli.test.cjs')) {
             $logFile = Join-Path $env:RUNNER_TEMP "$(Split-Path $testFile -Leaf).tap"
             node --test --test-reporter=tap $testFile 2>&1 | Tee-Object -FilePath $logFile
             $exitCode = $LASTEXITCODE

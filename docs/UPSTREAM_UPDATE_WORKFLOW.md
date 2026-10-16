@@ -8,6 +8,33 @@ Tài liệu này áp dụng cho repository hiện tại trên Windows PowerShell
 
 Quy trình luôn tạo nhánh backup, hợp nhất upstream trước, kiểm thử, sau đó mới publish.
 
+## Chạy tự động từ PowerShell
+
+Từ thư mục repository, chạy một lệnh để kiểm tra upstream, tạo backup, merge,
+giữ README ở trạng thái đã xóa, xác minh tùy biến, kiểm thử, commit và push
+`master` lên `origin`:
+
+```powershell
+.\scripts\update-upstream.ps1
+```
+
+Chỉ kiểm tra có cập nhật mới, không merge/commit/push:
+
+```powershell
+.\scripts\update-upstream.ps1 -Check
+```
+
+Có thể dùng trực tiếp `node scripts/update-upstream.cjs` hoặc thêm `--check`.
+Script yêu cầu Git, Node.js và Bun; nếu không tìm thấy Bun trong `PATH`,
+script dùng `launcher/build/runtime/runtime/bun.exe` như quy trình thủ công.
+Khi upstream chưa có commit mới, script vẫn thử `git push origin master:master`
+để publish các commit local chưa được đẩy. Nếu push bị từ chối, script báo lỗi,
+giữ nguyên commit local và không force-push. Khi merge xung đột hoặc kiểm thử
+thất bại, script hủy merge và giữ nhánh backup để khôi phục.
+
+Push có commit mới lên `master` sẽ kích hoạt GitHub Actions build và publish
+Windows Release theo `.github/workflows/teeho-windows-release.yml`.
+
 ## Cập nhật trực tiếp trong launcher chạy từ source
 
 Khi chạy launcher từ checkout Git bằng chế độ development, launcher tự chạy
