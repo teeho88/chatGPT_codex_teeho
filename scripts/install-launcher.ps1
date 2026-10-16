@@ -72,7 +72,7 @@ $BaseUrl = "https://github.com/$Repository/releases/download/v$Version"
 $Temp = Join-Path ([System.IO.Path]::GetTempPath()) "codex-web-gpt-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $Temp | Out-Null
 try {
-  if (Get-Process -Name "Codex Web GPT" -ErrorAction SilentlyContinue) {
+  if (Get-Process -Name "Codex Web GPT", "Codex Web GPT Teeho" -ErrorAction SilentlyContinue) {
     throw "Quit Codex Web GPT before updating it"
   }
   $Installer = Join-Path $Temp $Asset
@@ -97,7 +97,10 @@ try {
   if (-not (Test-IsFullyQualifiedWindowsPath $InstallLocation)) {
     throw "Installer recorded an invalid InstallLocation: $InstallLocation"
   }
-  $Executable = Join-Path $InstallLocation "Codex Web GPT.exe"
+  $Executable = Join-Path $InstallLocation "Codex Web GPT Teeho.exe"
+  if (-not (Test-Path $Executable)) {
+    $Executable = Join-Path $InstallLocation "Codex Web GPT.exe"
+  }
   if (-not (Test-Path $Executable)) { throw "Installed launcher was not found at $Executable" }
   Start-Process $Executable
   Write-Host "Installed $Executable"

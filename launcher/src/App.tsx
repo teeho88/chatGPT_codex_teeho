@@ -383,7 +383,7 @@ function LauncherShell({
   const mcpOptional = snapshot.state.browserInteractionMode === "automatic"
     && snapshot.state.codexCatalogVerified === true
     && snapshot.state.mcpSetupComplete !== true;
-  const updateVisible = ["available", "downloading", "installing"].includes(snapshot.update.status);
+  const updateVisible = ["available", "downloading", "installing", "updated"].includes(snapshot.update.status);
   const updateBusy = snapshot.update.status === "downloading" || snapshot.update.status === "installing";
   const updateVersion = "version" in snapshot.update ? snapshot.update.version : null;
   const selectedManualTab = browser?.tabs.find(tab => tab.active && tab.interactionMode === "manual");
@@ -645,9 +645,9 @@ function LauncherShell({
               {updateVisible ? (
                 <SidebarItem
                   active={false}
-                  disabled={updateBusy || operation?.status === "running" || browser?.status === "running"}
+                  disabled={updateBusy || snapshot.update.status === "updated" || operation?.status === "running" || browser?.status === "running"}
                   icon="update"
-                  label={updateBusy ? copy.updating : `${copy.updateAvailable} v${updateVersion}`}
+                  label={snapshot.update.status === "updated" ? `v${updateVersion} — ${copy.updatedRestart}` : updateBusy ? copy.updating : `${copy.updateAvailable} v${updateVersion}`}
                   onClick={() => void installUpdate()}
                   tone="update"
                 />
@@ -2768,7 +2768,7 @@ function FatalMessage({ message }: { message: string }) {
   return (
     <main className="fatal-message">
       <BrandMark />
-      <h1>Codex Web GPT</h1>
+      <h1>Codex Web GPT Teeho</h1>
       <p>{message}</p>
     </main>
   );

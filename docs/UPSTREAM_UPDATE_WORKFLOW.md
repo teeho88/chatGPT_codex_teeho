@@ -8,6 +8,22 @@ Tài liệu này áp dụng cho repository hiện tại trên Windows PowerShell
 
 Quy trình luôn tạo nhánh backup, hợp nhất upstream trước, kiểm thử, sau đó mới publish.
 
+## Cập nhật trực tiếp trong launcher chạy từ source
+
+Khi chạy launcher từ checkout Git bằng chế độ development, launcher tự chạy
+`git fetch upstream --prune` khi mở ứng dụng. Nếu có commit mới trên `upstream/main`, nút
+**Update** sẽ xuất hiện. Bấm nút để chạy lần lượt các bước kiểm tra, tạo backup,
+merge giữ trạng thái xóa `README*.md`, xác minh tùy biến quan trọng, cài dependency,
+kiểm thử, commit và `git push origin master:master` như quy trình bên dưới.
+
+Để đảm bảo an toàn, launcher chỉ cập nhật nhánh `master` khi không có thay đổi
+tracked chưa commit. Xung đột ngoài README hoặc bài kiểm thử thất bại sẽ hủy
+merge và giữ lại nhánh backup. Launcher không dùng force-push. Nếu push thất bại,
+merge đã commit vẫn nằm trên `master` để có thể publish thủ công.
+
+Sau khi cập nhật thành công, hãy khởi động lại launcher chạy từ source để nạp mã
+mới. Bản ứng dụng đã đóng gói tiếp tục cập nhật từ các GitHub Release chính thức.
+
 > **Quy tắc local:** không đưa các file README từ upstream vào repository này. Các file
 > `README.md`, `README.ja.md`, `README.ko.md`, `README.zh-CN.md` và các biến thể
 > `README*.md` khác phải tiếp tục ở trạng thái không được track/xóa khỏi nhánh `master`.

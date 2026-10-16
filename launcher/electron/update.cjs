@@ -193,8 +193,10 @@ function findMacApplication(root) {
   const appEntry = entries.find((entry) => entry.isDirectory() && entry.name.endsWith(".app"));
   if (!appEntry) throw new Error("The macOS update archive does not contain an application bundle");
   const application = path.join(root, appEntry.name);
-  const executable = path.join(application, "Contents", "MacOS", "Codex Web GPT");
-  if (!fs.existsSync(executable) || !fs.statSync(executable).isFile()) {
+  const executable = ["Codex Web GPT Teeho", "Codex Web GPT"]
+    .map((name) => path.join(application, "Contents", "MacOS", name))
+    .find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
+  if (!executable) {
     throw new Error("The macOS update archive is incomplete");
   }
   return application;
