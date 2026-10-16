@@ -10,6 +10,12 @@ Quy trình luôn tạo nhánh backup, hợp nhất upstream trước, kiểm th�
 
 ## Chạy tự động từ PowerShell
 
+Trên Windows, nhấp đúp `UPDATE-UPSTREAM.bat` ở thư mục gốc repository để
+chạy toàn bộ quy trình một lần. Cửa sổ lệnh giữ nguyên sau khi chạy để xem
+kết quả hoặc thông báo lỗi. File `.bat` tự tìm đúng đường dẫn script dù mở
+từ shortcut hoặc thư mục khác. Muốn chỉ kiểm tra, chạy
+`UPDATE-UPSTREAM.bat -Check` trong CMD/PowerShell.
+
 Từ thư mục repository, chạy một lệnh để kiểm tra upstream, tạo backup, merge,
 giữ README ở trạng thái đã xóa, xác minh tùy biến, kiểm thử, commit và push
 `master` lên `origin`:
