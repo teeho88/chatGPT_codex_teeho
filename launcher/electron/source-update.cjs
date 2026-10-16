@@ -81,8 +81,10 @@ function createSourceUpdateController({
 
   async function assertRepository() {
     const actualRoot = await git("rev-parse", "--show-toplevel");
-    if (path.normalize(actualRoot).toLowerCase() !== path.normalize(repositoryRoot).toLowerCase()) {
-      throw new Error("The launcher source directory is not the Git repository root");
+    const actualPath = fs.realpathSync.native(actualRoot);
+    const requestedPath = fs.realpathSync.native(repositoryRoot);
+    if (path.normalize(actualPath).toLowerCase() !== path.normalize(requestedPath).toLowerCase()) {
+      throw new Error(`The launcher source directory is not the Git repository root: ${actualPath} != ${requestedPath}`);
     }
     if (await git("branch", "--show-current") !== "master") {
       throw new Error("Source updates require the master branch");
