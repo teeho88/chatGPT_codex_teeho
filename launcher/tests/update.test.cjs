@@ -8,6 +8,7 @@ const { EventEmitter } = require("node:events");
 const { PassThrough } = require("node:stream");
 const {
   buildJob,
+  compareTeehoReleases,
   compareVersions,
   createUpdateController,
   createUpdateDownloader,
@@ -97,6 +98,14 @@ test("release comparison and platform assets are strict", () => {
   assert.equal(releaseAssetName("1.2.0", "linux", "arm64"), "codex-web-gpt-1.2.0-linux-arm64.AppImage");
   assert.equal(releaseAssetName("1.2.0", "linux", "arm"), null);
   assert.equal(releaseAssetName("1.2.0", "linux", "ia32"), null);
+  assert.equal(releaseAssetName("6.1.8-teeho.24", "win32", "x64", "teeho"),
+    "codex-web-gpt-teeho-6.1.8-win-x64.exe");
+  assert.equal(compareTeehoReleases("6.1.8-teeho.24", "6.1.8"), 1);
+  assert.equal(compareTeehoReleases("6.1.8-teeho.24", "6.1.8-teeho.24"), 0);
+  assert.equal(compareTeehoReleases("6.1.8-teeho.23", "6.1.8-teeho.24"), -1);
+  assert.equal(compareTeehoReleases("6.1.9-teeho.1", "6.1.8-teeho.24"), 1);
+  assert.equal(compareTeehoReleases("6.1.8-teeho.999", "6.1.9"), -1);
+  assert.throws(() => compareTeehoReleases("6.1.8", "6.1.8"), /Invalid Teeho release/);
 });
 
 test("checksums and release URLs bind the exact expected asset", () => {
@@ -115,6 +124,61 @@ test("checksums and release URLs bind the exact expected asset", () => {
     () => validateReleaseAssetUrl("https://example.com/launcher.zip", "1.2.0", "launcher.zip"),
     /unexpected release asset URL/,
   );
+  const teehoUrl = "https://github.com/teeho88/chatGPT_codex_teeho/releases/download/v6.1.8-teeho.24/codex-web-gpt-teeho-6.1.8-win-x64.exe";
+  assert.equal(validateReleaseAssetUrl(teehoUrl, "6.1.8-teeho.24", "codex-web-gpt-teeho-6.1.8-win-x64.exe", "teeho88/chatGPT_codex_teeho"), teehoUrl);
+  assert.throws(() => validateReleaseAssetUrl(teehoUrl.replace("teeho88", "miuuyy"), "6.1.8-teeho.24", "codex-web-gpt-teeho-6.1.8-win-x64.exe", "teeho88/chatGPT_codex_teeho"), /unexpected release asset URL/);
+});
+
+test("packaged Teeho installer updates from the fork and does not reinstall the same revision", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "teeho-update-test-"));
+  const version = "6.1.8-teeho.24";
+  const assetName = "codex-web-gpt-teeho-6.1.8-win-x64.exe";
+  const repository = "teeho88/chatGPT_codex_teeho";
+  const assetBody = Buffer.from("teeho installer mock");
+  const hash = require("node:crypto").createHash("sha256").update(assetBody).digest("hex");
+  const release = {
+    tag_name: `v${version}`,
+    assets: [assetName, "checksums.txt"].map(name => ({
+      name,
+      browser_download_url: `https://github.com/${repository}/releases/download/v${version}/${name}`,
+    })),
+  };
+  const baseOptions = {
+    currentVersion: "6.1.8", channel: "teeho", platform: "win32", arch: "x64", packaged: true,
+    executablePath: "C:\\Program Files\\Codex Web GPT Teeho\\Codex Web GPT Teeho.exe",
+    runtimeExecutable: "C:\\Program Files\\Codex Web GPT Teeho\\bun.exe",
+    logsDirectory: root,
+    dependencies: {
+      fetchRelease: async () => release,
+      downloadText: async () => `${hash}  ${assetName}\n`,
+      downloadFile: async (_url, target) => fs.writeFileSync(target, assetBody),
+      sha256: target => require("node:crypto").createHash("sha256").update(fs.readFileSync(target)).digest("hex"),
+      spawnWorker: (_runtime, _worker, jobPath) => {
+        const job = JSON.parse(fs.readFileSync(jobPath, "utf8"));
+        assert.equal(job.version, version);
+        assert.equal(job.platform, "win32");
+        return { pid: 1234, unref() {}, kill() {} };
+      },
+    },
+  };
+  try {
+    const available = createUpdateController(baseOptions);
+    assert.deepEqual(await available.checkOnce(), { status: "available", version });
+    const launch = await available.beginInstall();
+    assert.equal(available.getState().status, "installing");
+    available.cancelInstall(launch);
+    for (const currentReleaseVersion of [version, "6.1.8-teeho.25", "6.1.9-teeho.1"]) {
+      const upToDate = createUpdateController({ ...baseOptions, currentReleaseVersion });
+      assert.deepEqual(await upToDate.checkOnce(), { status: "up-to-date" });
+    }
+    const otherRelease = createUpdateController({
+      ...baseOptions,
+      dependencies: { fetchRelease: async () => ({ ...release, tag_name: "v6.1.8" }) },
+    });
+    assert.deepEqual(await otherRelease.checkOnce(), { status: "up-to-date" });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("macOS bundle resolution never guesses outside Contents/MacOS", () => {

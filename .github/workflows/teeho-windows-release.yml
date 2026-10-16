@@ -1,0 +1,58 @@
+name: Teeho Windows launcher release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: teeho-windows-release
+  cancel-in-progress: false
+
+jobs:
+  package:
+    if: github.repository == 'teeho88/chatGPT_codex_teeho'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: launcher
+      - name: Prepare compatible Windows Bun runtime
+        shell: pwsh
+        run: ./scripts/prepare-windows-baseline-bun.ps1 -Version 1.4.0 -GitHubEnv $env:GITHUB_ENV
+      - name: Stamp Teeho release revision
+        shell: pwsh
+        run: |
+          $version = (Get-Content launcher/package.json -Raw | ConvertFrom-Json).version
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Unsupported package version: $version" }
+          $releaseVersion = "$version-teeho.${{ github.run_number }}"
+          @{ version = $releaseVersion } | ConvertTo-Json -Compress | Set-Content launcher/electron/teeho-release.json -Encoding utf8
+          "TEEHO_RELEASE_VERSION=$releaseVersion" >> $env:GITHUB_ENV
+          "TEEHO_ASSET_VERSION=$version" >> $env:GITHUB_ENV
+      - run: bun run typecheck
+      - run: bun test tests/user-wait-store.test.ts tests/zero-risk-mcp-lifecycle.test.ts tests/browser-worker-contract.test.ts tests/chatgpt-web-harness.test.ts
+      - run: bun run launcher:typecheck
+      - run: node --test launcher/tests/update.test.cjs launcher/tests/packaging-contract.test.cjs launcher/tests/source-update.test.cjs
+      - run: bun run app:package
+      - run: bun run app:smoke
+      - name: Publish installer with SHA-256 checksum
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assetName = "codex-web-gpt-teeho-$env:TEEHO_ASSET_VERSION-win-x64.exe"
+          $assetPath = Join-Path 'launcher/artifacts' $assetName
+          if (!(Test-Path $assetPath -PathType Leaf)) { throw "Missing installer: $assetPath" }
+          $hash = (Get-FileHash $assetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $checksumPath = Join-Path 'launcher/artifacts' 'checksums.txt'
+          "$hash  $assetName" | Set-Content $checksumPath -Encoding ascii
+          $tag = "v$env:TEEHO_RELEASE_VERSION"
+          gh release create $tag $assetPath $checksumPath --repo $env:GITHUB_REPOSITORY --title $tag --latest --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw "Failed to publish $tag" }

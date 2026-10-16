@@ -22,7 +22,16 @@ merge và giữ lại nhánh backup. Launcher không dùng force-push. Nếu pus
 merge đã commit vẫn nằm trên `master` để có thể publish thủ công.
 
 Sau khi cập nhật thành công, hãy khởi động lại launcher chạy từ source để nạp mã
-mới. Bản ứng dụng đã đóng gói tiếp tục cập nhật từ các GitHub Release chính thức.
+mới. Khi `master` được push lên `teeho88/chatGPT_codex_teeho`, workflow
+`.github/workflows/teeho-windows-release.yml` tự kiểm thử, build installer Windows,
+và xuất bản GitHub Release dạng `vX.Y.Z-teeho.N` kèm `checksums.txt`. Bản `.exe`
+Teeho kiểm tra kênh Release này và dùng chính nút **Update** để tải bản mới,
+xác minh SHA-256, cài đặt và khởi động lại. Không cần chạy `git fetch` trên máy
+chỉ cài `.exe`.
+
+Workflow cần được bật GitHub Actions và có quyền tạo Release (`contents: write`).
+Những bản `.exe` đã build trước khi thay đổi updater này cần được cài đè một lần
+bằng installer mới để chuyển sang kênh Teeho.
 
 > **Quy tắc local:** không đưa các file README từ upstream vào repository này. Các file
 > `README.md`, `README.ja.md`, `README.ko.md`, `README.zh-CN.md` và các biến thể

@@ -6,7 +6,7 @@ const { spawn, spawnSync } = require("node:child_process");
 const { pipeline } = require("node:stream/promises");
 
 const REPOSITORY = "miuuyy/codex-chatgpt-web";
-const RELEASE_API_URL = `https://api.github.com/repos/${REPOSITORY}/releases/latest`;
+const TEEHO_REPOSITORY = "teeho88/chatGPT_codex_teeho";
 const USER_AGENT = "codex-web-gpt-launcher-updater";
 const MAX_REDIRECTS = 5;
 // A launcher started at sign-in can run its only check before the network is up, or while a new
@@ -37,21 +37,38 @@ function compareVersions(left, right) {
   return a.prerelease.localeCompare(b.prerelease, "en", { numeric: true });
 }
 
+function teehoBuild(version) {
+  const match = /^(\d+\.\d+\.\d+)-teeho\.([1-9]\d*)$/.exec(version);
+  return match ? { base: match[1], revision: BigInt(match[2]) } : null;
+}
+
+function compareTeehoReleases(candidate, installed) {
+  const next = teehoBuild(candidate);
+  if (!next) throw new Error(`Invalid Teeho release version: ${candidate}`);
+  const previous = teehoBuild(installed);
+  const baseComparison = compareVersions(next.base, previous?.base || installed);
+  if (baseComparison !== 0) return baseComparison;
+  if (!previous) return 1;
+  return next.revision === previous.revision ? 0 : next.revision > previous.revision ? 1 : -1;
+}
+
 function releaseVersion(tagName) {
   const version = String(tagName || "").replace(/^v/, "");
   if (!parseVersion(version)) throw new Error(`GitHub returned an invalid release tag: ${tagName}`);
   return version;
 }
 
-function releaseAssetName(version, platform = process.platform, arch = process.arch) {
+function releaseAssetName(version, platform = process.platform, arch = process.arch, channel = "upstream") {
+  const assetVersion = channel === "teeho" ? (teehoBuild(version)?.base || version) : version;
+  const prefix = channel === "teeho" ? "codex-web-gpt-teeho-" : "codex-web-gpt-";
   if (platform === "darwin" && ["arm64", "x64"].includes(arch)) {
-    return `codex-web-gpt-${version}-mac-${arch}.zip`;
+    return `${prefix}${assetVersion}-mac-${arch}.zip`;
   }
   if (platform === "win32" && arch === "x64") {
-    return `codex-web-gpt-${version}-win-x64.exe`;
+    return `${prefix}${assetVersion}-win-x64.exe`;
   }
   if (platform === "linux" && ["x64", "arm64"].includes(arch)) {
-    return `codex-web-gpt-${version}-linux-${arch}.AppImage`;
+    return `${prefix}${assetVersion}-linux-${arch}.AppImage`;
   }
   return null;
 }
@@ -64,10 +81,11 @@ function expectedChecksum(contents, assetName) {
   throw new Error(`checksums.txt has no entry for ${assetName}`);
 }
 
-function validateReleaseAssetUrl(raw, version, assetName) {
+function validateReleaseAssetUrl(raw, version, assetName, repository = REPOSITORY) {
   const url = new URL(raw);
-  const expectedPath = `/${REPOSITORY}/releases/download/v${version}/${assetName}`;
-  if (url.protocol !== "https:" || url.hostname !== "github.com" || url.pathname !== expectedPath) {
+  const expectedPath = `/${repository}/releases/download/v${version}/${assetName}`;
+  if (url.protocol !== "https:" || url.username || url.password || url.pathname !== expectedPath
+    || url.hostname !== "github.com") {
     throw new Error(`GitHub returned an unexpected release asset URL for ${assetName}`);
   }
   return url.toString();
@@ -256,14 +274,14 @@ function buildJob({ version, platform, executablePath, assetPath, stagingRoot, t
   throw new Error(`Updates are not supported on ${platform}`);
 }
 
-function defaultDependencies() {
+function defaultDependencies(repository = REPOSITORY) {
   // Chromium owns the launcher's system proxy/PAC policy. Do not bypass it with
   // Node HTTPS or borrow cookies from the authenticated ChatGPT browser profile.
   const { downloadText, downloadFile } = createUpdateDownloader(
     options => require("electron").net.request(options),
   );
   return {
-    fetchRelease: async () => JSON.parse(await downloadText(RELEASE_API_URL)),
+    fetchRelease: async () => JSON.parse(await downloadText(`https://api.github.com/repos/${repository}/releases/latest`)),
     downloadText,
     downloadFile,
     sha256,
@@ -302,6 +320,8 @@ function defaultDependencies() {
 
 function createUpdateController({
   currentVersion,
+  currentReleaseVersion = currentVersion,
+  channel = "upstream",
   platform,
   arch,
   packaged,
@@ -313,8 +333,10 @@ function createUpdateController({
   retryDelaysMs = UPDATE_CHECK_RETRY_DELAYS_MS,
   dependencies = {},
 }) {
-  const deps = { ...defaultDependencies(), ...dependencies };
-  const supportedAsset = releaseAssetName(currentVersion, platform, arch);
+  if (!["upstream", "teeho"].includes(channel)) throw new Error(`Unsupported update channel: ${channel}`);
+  const repository = channel === "teeho" ? TEEHO_REPOSITORY : REPOSITORY;
+  const deps = { ...defaultDependencies(repository), ...dependencies };
+  const supportedAsset = releaseAssetName(currentVersion, platform, arch, channel);
   let state = packaged && supportedAsset ? { status: "idle" } : { status: "disabled" };
   let checked = false;
   let failedChecks = 0;
@@ -343,11 +365,17 @@ function createUpdateController({
         return transition({ status: "up-to-date" });
       }
       const version = releaseVersion(release?.tag_name);
-      if (compareVersions(version, currentVersion) <= 0) {
+      if (channel === "teeho" && !teehoBuild(version)) {
         candidate = null;
         return transition({ status: "up-to-date" });
       }
-      const assetName = releaseAssetName(version, platform, arch);
+      if ((channel === "teeho"
+        ? compareTeehoReleases(version, currentReleaseVersion)
+        : compareVersions(version, currentVersion)) <= 0) {
+        candidate = null;
+        return transition({ status: "up-to-date" });
+      }
+      const assetName = releaseAssetName(version, platform, arch, channel);
       if (!assetName) return transition({ status: "disabled" });
       const assets = Array.isArray(release?.assets) ? release.assets : [];
       const asset = assets.find((item) => item?.name === assetName);
@@ -358,8 +386,8 @@ function createUpdateController({
       candidate = {
         version,
         assetName,
-        assetUrl: validateReleaseAssetUrl(asset.browser_download_url, version, assetName),
-        checksumsUrl: validateReleaseAssetUrl(checksums.browser_download_url, version, "checksums.txt"),
+        assetUrl: validateReleaseAssetUrl(asset.browser_download_url, version, assetName, repository),
+        checksumsUrl: validateReleaseAssetUrl(checksums.browser_download_url, version, "checksums.txt", repository),
       };
       logger?.info("launcher.update_available", { currentVersion, version, platform, arch });
       return transition({ status: "available", version });
@@ -457,6 +485,7 @@ function createUpdateController({
 module.exports = {
   buildJob,
   compareVersions,
+  compareTeehoReleases,
   createUpdateController,
   createUpdateDownloader,
   expectedChecksum,

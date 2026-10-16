@@ -1247,6 +1247,10 @@ async function start() {
   await browserHost.ready();
   const updaterRuntimeRoot = runtimeRootProvider();
   const sourceRepository = path.resolve(__dirname, "..", "..");
+  const teehoBuildFile = path.join(__dirname, "teeho-release.json");
+  const teehoReleaseVersion = app.isPackaged && fs.existsSync(teehoBuildFile)
+    ? JSON.parse(fs.readFileSync(teehoBuildFile, "utf8")).version
+    : app.getVersion();
   updateController = !app.isPackaged && isSourceCheckout(sourceRepository)
     ? createSourceUpdateController({
       repositoryRoot: sourceRepository,
@@ -1255,6 +1259,8 @@ async function start() {
     })
     : createUpdateController({
       currentVersion: app.getVersion(),
+      currentReleaseVersion: teehoReleaseVersion,
+      channel: app.isPackaged && process.platform === "win32" ? "teeho" : "upstream",
       platform: process.platform,
       arch: process.arch,
       packaged: app.isPackaged && !IS_DEV_PROFILE,
