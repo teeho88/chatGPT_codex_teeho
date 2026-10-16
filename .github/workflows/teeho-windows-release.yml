@@ -39,7 +39,21 @@ jobs:
       - run: bun run typecheck
       - run: bun test tests/user-wait-store.test.ts tests/zero-risk-mcp-lifecycle.test.ts tests/browser-worker-contract.test.ts tests/chatgpt-web-harness.test.ts
       - run: bun run launcher:typecheck
-      - run: node --test launcher/tests/update.test.cjs launcher/tests/packaging-contract.test.cjs launcher/tests/source-update.test.cjs
+      - name: Verify launcher updater and release contracts
+        shell: pwsh
+        run: |
+          foreach ($testFile in @('launcher/tests/update.test.cjs', 'launcher/tests/packaging-contract.test.cjs', 'launcher/tests/source-update.test.cjs')) {
+            $logFile = Join-Path $env:RUNNER_TEMP "$(Split-Path $testFile -Leaf).tap"
+            node --test --test-reporter=tap $testFile 2>&1 | Tee-Object -FilePath $logFile
+            $exitCode = $LASTEXITCODE
+            if ($exitCode -ne 0) {
+              Get-Content $logFile | Select-String '^(not ok |\s+(error:|message:|code:|failureType:))' | Select-Object -First 20 | ForEach-Object {
+                $message = $_.Line.Trim().Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+                Write-Output "::error title=Launcher test failure::$message"
+              }
+              throw "Launcher test failed: $testFile (exit $exitCode)"
+            }
+          }
       - run: bun run app:package
       - run: bun run app:smoke
       - name: Publish installer with SHA-256 checksum
