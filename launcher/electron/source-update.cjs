@@ -38,6 +38,46 @@ function isSourceCheckout(repositoryRoot) {
   return fs.existsSync(path.join(repositoryRoot, ".git"));
 }
 
+async function preserveLocalDocumentation(repositoryRoot, git) {
+  const tracked = new Set((await git("ls-files", "-z")).split("\0").filter(Boolean));
+  const filenames = fs.readdirSync(repositoryRoot).filter(filename =>
+    (/^README.*\.md$/.test(filename) || ["CONTRIBUTING.md", "SECURITY.md", "TROUBLESHOOTING.md"].includes(filename)) &&
+    !tracked.has(filename) && !fs.lstatSync(path.join(repositoryRoot, filename)).isDirectory());
+  if (!filenames.length) return () => {};
+  const directory = path.resolve(repositoryRoot, await git("rev-parse", "--git-common-dir"));
+  const backup = fs.mkdtempSync(path.join(directory, "teeho-local-docs-"));
+  const saved = new Set();
+  const restore = () => {
+    const errors = [];
+    for (const filename of saved) {
+      const destination = path.join(repositoryRoot, filename);
+      try {
+        let exists = false;
+        try { fs.lstatSync(destination); exists = true; }
+        catch (error) { if (error.code !== "ENOENT") throw error; }
+        if (exists) throw new Error(`Cannot restore ${filename}: the destination already exists`);
+        fs.renameSync(path.join(backup, filename), destination);
+        saved.delete(filename);
+      } catch (error) { errors.push(error); }
+    }
+    if (errors.length) {
+      throw new AggregateError(errors, `Could not restore local documentation. Saved files remain at ${backup}. ${errors.map(error => error.message).join("; ")}`);
+    }
+    fs.rmdirSync(backup);
+  };
+  try {
+    for (const filename of filenames) {
+      fs.renameSync(path.join(repositoryRoot, filename), path.join(backup, filename));
+      saved.add(filename);
+    }
+  } catch (error) {
+    try { restore(); }
+    catch (restoreError) { throw new AggregateError([error, restoreError], `${error.message}\n${restoreError.message}`); }
+    throw error;
+  }
+  return restore;
+}
+
 function preserveFeatures(repositoryRoot) {
   const features = [];
   for (const [filename, tokens] of Object.entries(PROTECTED_FEATURES)) {
@@ -182,6 +222,8 @@ function createSourceUpdateController({
     let committed = false;
     let backup;
     let releaseLock;
+    let restoreDocumentation;
+    let failure;
     try {
       releaseLock = await acquireLock(repositoryRoot, git);
       await assertRepository();
@@ -189,9 +231,10 @@ function createSourceUpdateController({
       const latest = await fetchCandidate();
       if (!latest) return transition(upToDateState());
       await assertClean();
-      await assertNoLocalObstructions(repositoryRoot, git, latest.sha);
       await git("var", "GIT_AUTHOR_IDENT");
       await git("var", "GIT_COMMITTER_IDENT");
+      restoreDocumentation = await preserveLocalDocumentation(repositoryRoot, git);
+      await assertNoLocalObstructions(repositoryRoot, git, latest.sha);
       const features = preserveFeatures(repositoryRoot);
       const stamp = now().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
       backup = `backup/pre-upstream-${stamp}`;
@@ -270,9 +313,17 @@ function createSourceUpdateController({
         ? { status: "updated", version: candidate.version }
         : { status: "available", version: candidate.version });
       logger?.warn("launcher.source_update_failed", { message: error.message, backup });
+      failure = error;
       throw error;
     } finally {
-      releaseLock?.();
+      try {
+        restoreDocumentation?.();
+      } catch (error) {
+        if (failure) throw new AggregateError([failure, error], `${failure.message}\n${error.message}`);
+        throw error;
+      } finally {
+        releaseLock?.();
+      }
     }
   }
 

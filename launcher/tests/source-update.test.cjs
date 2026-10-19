@@ -280,6 +280,49 @@ for (const kind of ["add/add", "modify/delete", "delete/modify", "rename/rename"
 }
 
 for (const ignored of [false, true]) {
+  test(`source updater restores excluded ${ignored ? "ignored" : "untracked"} documentation after updating`, async t => {
+    const f = fixture(t);
+    const docs = ["README.md", "README.local.md", "CONTRIBUTING.md", "SECURITY.md", "TROUBLESHOOTING.md"];
+    if (ignored) fs.appendFileSync(path.join(f.checkout, ".git", "info", "exclude"), `\n${docs.join("\n")}\n`);
+    for (const filename of docs) write(f.checkout, filename, Buffer.from(`local ${filename}\r\n`));
+    f.publishUpstream();
+    const controller = f.controller();
+    await controller.checkOnce();
+    assert.equal((await controller.beginInstall()).status, "updated");
+    for (const filename of docs) {
+      assert.deepEqual(fs.readFileSync(path.join(f.checkout, filename)), Buffer.from(`local ${filename}\r\n`));
+      assert.equal(git(f.checkout, "ls-files", "--", filename), "");
+    }
+    assert.equal(git(f.checkout, "rev-parse", "HEAD"), git(f.origin, "rev-parse", "master"));
+    assert.equal(git(f.checkout, "status", "--porcelain", "--untracked-files=no"), "");
+  });
+}
+
+for (const failure of ["merge", "typecheck"]) {
+  test(`source updater restores local documentation when ${failure} fails`, async t => {
+    const f = fixture(t);
+    f.publishUpstream();
+    const docs = ["CONTRIBUTING.md", "SECURITY.md"];
+    for (const filename of docs) write(f.checkout, filename, `local ${filename}\n`);
+    const oldHead = git(f.checkout, "rev-parse", "HEAD");
+    const run = async (executable, args, cwd) => {
+      if ((failure === "merge" && executable === "git" && args[0] === "merge" && args[1] === "--no-commit") ||
+          (failure === "typecheck" && executable !== "git" && args[1] === "typecheck")) {
+        throw new Error(`Injected ${failure} failure`);
+      }
+      return f.run(executable, args, cwd);
+    };
+    const controller = f.controller({ run });
+    await controller.checkOnce();
+    await assert.rejects(controller.beginInstall(), new RegExp(`Injected ${failure} failure`));
+    for (const filename of docs) assert.equal(fs.readFileSync(path.join(f.checkout, filename), "utf8"), `local ${filename}\n`);
+    assert.equal(git(f.checkout, "rev-parse", "HEAD"), oldHead);
+    assert.equal(fs.existsSync(path.join(f.checkout, ".git", "MERGE_HEAD")), false);
+    assert.equal(fs.existsSync(path.join(f.checkout, ".git", "teeho-source-update.lock")), false);
+  });
+}
+
+for (const ignored of [false, true]) {
   test(`source updater preserves ${ignored ? "ignored" : "untracked"} files blocking a merge`, async t => {
     const f = fixture(t);
     const seed = path.join(path.dirname(f.upstream), "seed");
