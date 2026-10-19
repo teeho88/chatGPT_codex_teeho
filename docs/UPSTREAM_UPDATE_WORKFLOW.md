@@ -33,10 +33,81 @@ Chỉ kiểm tra có cập nhật mới, không merge/commit/push:
 Có thể dùng trực tiếp `node scripts/update-upstream.cjs` hoặc thêm `--check`.
 Script yêu cầu Git, Node.js và Bun; nếu không tìm thấy Bun trong `PATH`,
 script dùng `launcher/build/runtime/runtime/bun.exe` như quy trình thủ công.
-Khi upstream chưa có commit mới, script vẫn thử `git push origin master:master`
-để publish các commit local chưa được đẩy. Nếu push bị từ chối, script báo lỗi,
-giữ nguyên commit local và không force-push. Khi merge xung đột hoặc kiểm thử
-thất bại, script hủy merge và giữ nhánh backup để khôi phục.
+Khi có thay đổi tracked/staged chưa commit, script hiển thị menu trước khi fetch
+và so sánh upstream:
+
+- `C` hoặc `commit`: stage các thay đổi tracked rồi commit cùng các file đã stage,
+  với thông điệp `Save local changes before upstream update`.
+- `S` hoặc `stash`: lưu các thay đổi tracked/staged vào stash, rồi khôi phục cả
+  nội dung và trạng thái stage sau khi cập nhật hoặc bỏ qua. Stash dự phòng vẫn
+  được giữ lại; thông báo in SHA để khôi phục khi cần. Nếu fetch/merge thất bại,
+  script cũng thử khôi phục. Nếu khôi phục bị chặn hoặc có conflict, script báo
+  lỗi và giữ stash để xử lý thủ công.
+- `A`, `abort`, Enter trống hoặc hết đầu vào: hủy mà không commit/stash/push.
+
+File untracked không được tự thêm vào commit hoặc stash; chúng được giữ nguyên.
+Muốn đưa file mới vào commit, hãy `git add` file đó trước khi chạy script.
+
+Sau bước này, script fetch upstream và hiển thị hai giá trị `version` trong
+`package.json` local và `upstream/main`. Nếu **hai version giống hệt nhau**,
+script bỏ qua merge, commit merge và push, kể cả khi upstream có commit khác
+hoặc local có commit chưa publish. Commit đã tạo bằng lựa chọn `C` vẫn nằm local;
+thay đổi đã stash bằng `S` được khôi phục. Nếu version khác nhau, quy trình cập
+nhật tiếp tục; khi upstream không có commit mới, script vẫn có thể publish các
+commit local. `-Check` chỉ fetch và so version, không hỏi commit/stash hay thay
+đổi working tree, kể cả khi có thay đổi chưa commit.
+
+Quy tắc bỏ qua theo version áp dụng cho BAT/CLI; updater trong launcher tiếp tục
+kiểm tra theo commit. Nếu push bị từ chối, script báo lỗi,
+giữ nguyên commit local và không force-push. Khi merge xung đột, script cho chọn
+local hoặc upstream cho từng file. Nếu hủy lựa chọn hoặc kiểm thử thất bại,
+script hủy merge và giữ nhánh backup để khôi phục.
+
+### Khi Git có conflict hoặc trạng thái chưa hoàn tất
+
+Khi chạy `UPDATE-UPSTREAM.bat` hoặc CLI Node, script liệt kê các file conflict,
+rồi hỏi lần lượt cho từng file:
+
+- `L` hoặc `local`: giữ toàn bộ bản file phía local trước merge.
+- `U` hoặc `upstream`: giữ toàn bộ bản file phía upstream đang được merge.
+- `A`, `abort`, Enter trống, Ctrl+C tại menu hoặc hết đầu vào: hủy cập nhật,
+  thử khôi phục trạng thái trước merge và giữ backup.
+
+Lựa chọn áp dụng cho **toàn bộ file**, bao gồm cả phần không bị conflict.
+Nếu một phía không có file, menu ghi rõ chọn phía đó nghĩa là xóa file.
+Các đường dẫn được hiển thị đúng theo index conflict của Git; với conflict
+đổi tên hoặc file/thư mục, Git có thể đưa ra nhiều đường dẫn cần chọn riêng.
+Script thu thập đủ lựa chọn trước khi áp dụng, rồi chạy kiểm tra tùy biến,
+kiểm thử, commit và push như trước. README và các tài liệu bị loại trừ vẫn
+được giữ ở trạng thái xóa theo quy tắc repository. Lựa chọn làm mất tùy biến
+được bảo vệ hoặc khiến kiểm thử thất bại vẫn bị từ chối và hủy merge.
+
+Không thể bảo đảm mọi conflict đều tự hợp nhất đúng hoặc mọi lệnh Git
+luôn thành công (mạng, quyền truy cập và chính sách remote vẫn có thể gây lỗi).
+
+- Trước khi cập nhật hoặc push, script chặn merge, rebase, `git am`, cherry-pick,
+  revert, bisect đang dang dở, index còn conflict và `index.lock` còn tồn tại.
+  Hoàn tất hoặc hủy thao tác tương ứng trước khi chạy lại.
+- Một khóa riêng trong thư mục Git dùng chung ngăn hai updater cùng cập nhật.
+  Nếu updater bị tắt đột ngột, thông báo sẽ chỉ đúng đường dẫn khóa còn lại.
+  Chỉ xóa khóa sau khi đã xác minh không còn updater chạy. Không tự xóa
+  `index.lock` của Git khi có tiến trình Git đang hoạt động.
+- Merge không tự stash thay đổi và không được ghi đè file bị ignore. Nếu file
+  untracked hoặc ignored chặn merge, script dừng để bạn tự di chuyển hoặc lưu file.
+- Nếu không cung cấp bộ chọn (như updater trong launcher) hoặc không giải quyết
+  được conflict sau lựa chọn, script liệt kê conflict cùng backup và commit
+  upstream, rồi thử `git merge --abort`. Nếu thành công, HEAD và các thay đổi
+  tracked do merge được khôi phục. Có thể xử lý thủ công theo mục 5.
+- Nếu abort thất bại, thông báo giữ cả lỗi ban đầu, lỗi abort và tên backup.
+  Giữ nguyên working tree, kiểm tra `git status`, rồi xử lý thao tác đang dở.
+  Script không dùng `reset --hard` hoặc xóa file local để che lỗi.
+- Nếu push bị từ chối do `origin/master` có commit khác, commit local được giữ.
+  Fetch origin, hợp nhất lịch sử và xử lý conflict thủ công trước khi chạy lại.
+  Script không force-push.
+
+Các chốt kiểm tra này dùng chung với updater của launcher. Trước khi tạo merge,
+script cũng kiểm tra danh tính commit; sau kiểm thử, script yêu cầu không có
+thay đổi tracked chưa stage do quá trình kiểm thử tạo ra trước khi commit.
 
 Push có commit mới lên `master` sẽ kích hoạt GitHub Actions build và publish
 Windows Release theo `.github/workflows/teeho-windows-release.yml`.

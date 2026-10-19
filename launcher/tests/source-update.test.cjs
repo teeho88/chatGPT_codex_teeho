@@ -73,9 +73,9 @@ function fixture(t) {
       return args[0] === "--version" ? "1.4.0" : "";
     }
     const { stdout } = await execAsync(executable, args, { cwd, encoding: "utf8", windowsHide: true });
-    return stdout.trim();
+    return args.includes("-z") ? stdout : stdout.trim();
   };
-  const controller = () => createSourceUpdateController({ repositoryRoot: checkout, upstreamUrl: upstream, run });
+  const controller = (options = {}) => createSourceUpdateController({ repositoryRoot: checkout, upstreamUrl: upstream, run, ...options });
   return { checkout, upstream, origin, publishUpstream, bunCalls, run, controller };
 }
 
@@ -83,7 +83,7 @@ test("source update fetches, creates backup, resolves README deletion, tests, co
   const f = fixture(t);
   assert.equal(isSourceCheckout(f.checkout), true);
   const upstreamCommit = f.publishUpstream();
-  const controller = f.controller();
+  const controller = f.controller({ skipSameVersion: true });
   assert.deepEqual(await controller.checkOnce(), { status: "available", version: "1.0.1" });
   assert.deepEqual(await controller.beginInstall(), { status: "updated", version: "1.0.1" });
   assert.equal(git(f.checkout, "rev-parse", "HEAD"), git(f.origin, "rev-parse", "master"));
@@ -125,6 +125,41 @@ test("source updater aborts non-README conflicts and keeps recovery branch", asy
   assert.match(git(f.checkout, "branch", "--list", "backup/pre-upstream-*"), /pre-upstream-/);
 });
 
+for (const choice of ["local", "upstream", "abort"]) {
+  test(`source updater handles ${choice} conflict choice before validation and publication`, async t => {
+    const f = fixture(t);
+    write(f.checkout, "feature.txt", "local choice\n");
+    git(f.checkout, "add", "feature.txt");
+    git(f.checkout, "commit", "-m", "Local feature");
+    const oldHead = git(f.checkout, "rev-parse", "HEAD");
+    const originHead = git(f.origin, "rev-parse", "master");
+    const upstreamHead = f.publishUpstream({ feature: "upstream choice\n" });
+    const prompts = [];
+    const controller = f.controller({ resolveConflict: async conflict => {
+      prompts.push(conflict);
+      return choice;
+    } });
+    await controller.checkOnce();
+    if (choice === "abort") {
+      await assert.rejects(controller.beginInstall(), /cancelled/);
+      assert.equal(git(f.checkout, "rev-parse", "HEAD"), oldHead);
+      assert.equal(git(f.origin, "rev-parse", "master"), originHead);
+      assert.equal(f.bunCalls.length, 0);
+    } else {
+      assert.equal((await controller.beginInstall()).status, "updated");
+      assert.equal(fs.readFileSync(path.join(f.checkout, "feature.txt"), "utf8").trim(), `${choice} choice`);
+      assert.equal(git(f.checkout, "merge-base", "--is-ancestor", upstreamHead, "HEAD"), "");
+      assert.equal(git(f.checkout, "rev-parse", "HEAD"), git(f.origin, "rev-parse", "master"));
+      assert.equal(f.bunCalls.length, 4);
+    }
+    assert.equal(prompts.length, 1);
+    assert.equal(prompts[0].filename, "feature.txt");
+    assert.equal(git(f.checkout, "status", "--porcelain"), "");
+    assert.equal(fs.existsSync(path.join(f.checkout, ".git", "MERGE_HEAD")), false);
+    assert.match(git(f.checkout, "branch", "--list", "backup/pre-upstream-*"), /pre-upstream-/);
+  });
+}
+
 test("source updater rolls back merge when checks fail", async t => {
   const f = fixture(t);
   f.publishUpstream();
@@ -146,6 +181,9 @@ test("source updater rolls back merge when checks fail", async t => {
 test("source update preserves the original error when Git refuses to start a merge", async t => {
   const f = fixture(t);
   f.publishUpstream();
+  write(f.checkout, "SECURITY.md", "local policy\n");
+  git(f.checkout, "add", "SECURITY.md");
+  git(f.checkout, "commit", "-m", "Local policy must survive rejected merge");
   const oldHead = git(f.checkout, "rev-parse", "HEAD");
   const run = async (executable, args, cwd) => {
     if (executable === "git" && args[0] === "merge" && args[1] === "--no-commit") {
@@ -158,6 +196,7 @@ test("source update preserves the original error when Git refuses to start a mer
   await assert.rejects(controller.beginInstall(), /Git refused to start merge/);
   assert.equal(git(f.checkout, "rev-parse", "HEAD"), oldHead);
   assert.equal(git(f.checkout, "status", "--porcelain", "--untracked-files=no"), "");
+  assert.equal(fs.readFileSync(path.join(f.checkout, "SECURITY.md"), "utf8").replace(/\r\n/g, "\n"), "local policy\n");
   assert.equal(controller.getState().status, "available");
 });
 
@@ -191,4 +230,107 @@ test("source update leaves committed changes in place when origin push fails", a
   await assert.rejects(controller.beginInstall(), /updated and committed locally, but push to origin failed/);
   assert.equal(git(f.checkout, "merge-base", "--is-ancestor", upstreamCommit, "HEAD"), "");
   assert.equal(controller.getState().status, "updated");
+});
+
+for (const kind of ["add/add", "modify/delete", "delete/modify", "rename/rename", "rename/delete", "binary", "file/directory"]) {
+  test(`source updater safely aborts ${kind} conflicts`, async t => {
+    const f = fixture(t);
+    const seed = path.join(path.dirname(f.upstream), "seed");
+    if (kind === "add/add") {
+      write(f.checkout, "new file.txt", "local\n");
+      write(seed, "new file.txt", "upstream\n");
+    } else if (kind === "modify/delete") {
+      write(f.checkout, "feature.txt", "local\n");
+      git(seed, "rm", "feature.txt");
+    } else if (kind === "delete/modify") {
+      git(f.checkout, "rm", "feature.txt");
+      write(seed, "feature.txt", "upstream\n");
+    } else if (kind === "rename/rename") {
+      git(f.checkout, "mv", "feature.txt", "local-name.txt");
+      git(seed, "mv", "feature.txt", "upstream-name.txt");
+    } else if (kind === "rename/delete") {
+      git(f.checkout, "mv", "feature.txt", "local-name.txt");
+      git(seed, "rm", "feature.txt");
+    } else if (kind === "binary") {
+      write(f.checkout, "feature.txt", Buffer.from([0, 1, 2]));
+      write(seed, "feature.txt", Buffer.from([0, 3, 4]));
+    } else {
+      write(f.checkout, "new-path", "local file\n");
+      write(seed, "new-path/child.txt", "upstream directory\n");
+    }
+    git(f.checkout, "add", "-A");
+    git(f.checkout, "commit", "-m", `Local ${kind}`);
+    const oldHead = git(f.checkout, "rev-parse", "HEAD");
+    git(seed, "add", "-A");
+    git(seed, "commit", "-m", `Upstream ${kind}`);
+    git(seed, "push", "origin", "main");
+    const originHead = git(f.origin, "rev-parse", "master");
+    const controller = f.controller();
+    assert.equal((await controller.checkOnce()).status, "available");
+    await assert.rejects(controller.beginInstall(), /manual conflict resolution/);
+    assert.equal(git(f.checkout, "rev-parse", "HEAD"), oldHead);
+    assert.equal(git(f.origin, "rev-parse", "master"), originHead);
+    assert.equal(git(f.checkout, "status", "--porcelain"), "");
+    assert.equal(git(f.checkout, "ls-files", "--unmerged"), "");
+    assert.equal(f.bunCalls.length, 0);
+    assert.equal(fs.existsSync(path.join(f.checkout, ".git", "MERGE_HEAD")), false);
+    assert.equal(fs.existsSync(path.join(f.checkout, ".git", "teeho-source-update.lock")), false);
+    assert.match(git(f.checkout, "branch", "--list", "backup/pre-upstream-*"), /pre-upstream-/);
+  });
+}
+
+for (const ignored of [false, true]) {
+  test(`source updater preserves ${ignored ? "ignored" : "untracked"} files blocking a merge`, async t => {
+    const f = fixture(t);
+    const seed = path.join(path.dirname(f.upstream), "seed");
+    const filename = ignored ? " local-only.txt" : "local-only.txt";
+    write(seed, filename, "upstream\n");
+    f.publishUpstream();
+    if (ignored) fs.appendFileSync(path.join(f.checkout, ".git", "info", "exclude"), `\n${filename}\n`);
+    write(f.checkout, filename, "valuable local data\n");
+    const oldHead = git(f.checkout, "rev-parse", "HEAD");
+    const controller = f.controller();
+    assert.equal((await controller.checkOnce()).status, "available");
+    await assert.rejects(controller.beginInstall(), /overwritten by merge/);
+    assert.equal(fs.readFileSync(path.join(f.checkout, filename), "utf8"), "valuable local data\n");
+    assert.equal(git(f.checkout, "rev-parse", "HEAD"), oldHead);
+    assert.equal(git(f.checkout, "status", "--porcelain", "--untracked-files=no"), "");
+  });
+}
+
+test("source updater refuses a concurrent updater without deleting its lock", async t => {
+  const f = fixture(t);
+  f.publishUpstream();
+  const controller = f.controller();
+  await controller.checkOnce();
+  const filename = path.join(f.checkout, ".git", "teeho-source-update.lock");
+  fs.writeFileSync(filename, "other updater");
+  await assert.rejects(controller.beginInstall(), /Another source update is running/);
+  assert.equal(fs.readFileSync(filename, "utf8"), "other updater");
+  assert.equal(git(f.checkout, "branch", "--list", "backup/pre-upstream-*"), "");
+});
+
+test("source updater preserves both errors and backup when abort fails", async t => {
+  const f = fixture(t);
+  write(f.checkout, "feature.txt", "local\n");
+  git(f.checkout, "add", "feature.txt");
+  git(f.checkout, "commit", "-m", "Local change");
+  f.publishUpstream({ feature: "upstream\n" });
+  const run = async (executable, args, cwd) => {
+    if (executable === "git" && args[0] === "merge" && args[1] === "--abort") {
+      throw new Error("abort failed for test");
+    }
+    return f.run(executable, args, cwd);
+  };
+  const controller = createSourceUpdateController({ repositoryRoot: f.checkout, upstreamUrl: f.upstream, run });
+  await controller.checkOnce();
+  await assert.rejects(controller.beginInstall(), error => {
+    assert.match(error.message, /manual conflict resolution/);
+    assert.match(error.message, /abort failed for test/);
+    assert.match(error.message, /backup\/pre-upstream-/);
+    return true;
+  });
+  assert.equal(fs.existsSync(path.join(f.checkout, ".git", "MERGE_HEAD")), true);
+  assert.equal(fs.existsSync(path.join(f.checkout, ".git", "teeho-source-update.lock")), false);
+  assert.equal(controller.getState().status, "available");
 });

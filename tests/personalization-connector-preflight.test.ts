@@ -439,6 +439,42 @@ test("an abort during localized connector proof restores the exact preflight per
   expect(personalized).toBeFalse();
 });
 
+test("a Temporary Chat without a personalization menu reports recovery before the overall deadline", async () => {
+  let clicks = 0;
+  let escapePresses = 0;
+  const absent = visibleLocator(() => 0);
+  const control = {
+    waitFor: async ({ timeout }: { timeout: number }) => {
+      expect(timeout).toBeGreaterThan(0);
+      expect(timeout).toBeLessThanOrEqual(5_000);
+      const error = new Error("control did not become visible");
+      error.name = "TimeoutError";
+      throw error;
+    },
+    click: async () => { clicks += 1; },
+  };
+  const controls = { filter: () => controls, first: () => control };
+  const page = {
+    getByRole: () => absent,
+    locator: (selector: string) => {
+      if (selector === "body") return {
+        press: async () => { escapePresses += 1; },
+      };
+      return controls;
+    },
+  } as any;
+
+  await expect(ensureChatGptPersonalizedConnectorAccess(page, undefined, async () => false))
+    .rejects.toMatchObject({
+      status: 424,
+      code: "connector_not_found",
+      message: "ChatGPT Temporary Chat does not expose a personalization menu and the configured connector is unavailable."
+        + " Reload ChatGPT and retry. If a personalization control is available, choose Personalized before sending a message.",
+    });
+  expect(clicks).toBe(0);
+  expect(escapePresses).toBe(1);
+});
+
 test("a missing owned personalization menu closes the opened control and returns a connector error", async () => {
   const controller = new AbortController();
   let escapePresses = 0;

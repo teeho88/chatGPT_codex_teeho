@@ -278,6 +278,7 @@ const CHATGPT_PERSONALIZATION_CONTROL_SELECTOR = [
 ].join(", ");
 const CHATGPT_PERSONALIZATION_CHOICE_SELECTOR = '[role="menuitemradio"], [role="radio"]';
 const CHATGPT_PERSONALIZATION_PREFLIGHT_TIMEOUT_MS = 30_000;
+const CHATGPT_PERSONALIZATION_CONTROL_TIMEOUT_MS = 5_000;
 const CHATGPT_PERSONALIZATION_CLEANUP_TIMEOUT_MS = 5_000;
 
 class ChatGptPersonalizationDeadlineError extends Error {
@@ -466,13 +467,14 @@ async function openChatGptStructuralPersonalizationState(
   try {
     await control.waitFor({
       state: "visible",
-      timeout: remainingChatGptPersonalizationMs(deadline, signal),
+      timeout: Math.min(CHATGPT_PERSONALIZATION_CONTROL_TIMEOUT_MS, remainingChatGptPersonalizationMs(deadline, signal)),
       signal,
     });
   } catch (error) {
     if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
     throw chatGptConnectorUnavailableError(
-      "ChatGPT Temporary Chat did not expose a structural personalization control before the readiness deadline",
+      "ChatGPT Temporary Chat does not expose a personalization menu and the configured connector is unavailable."
+      + " Reload ChatGPT and retry. If a personalization control is available, choose Personalized before sending a message.",
     );
   }
   const controlCount = await runChatGptPersonalizationStep(() => controls.count(), deadline, signal);

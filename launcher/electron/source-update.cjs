@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
+const { assertGitReady, acquireUpdateLock, assertNoLocalObstructions, gitErrorDetails, resolveMergeConflicts } = require("./source-update-safety.cjs");
 
 const execFileAsync = promisify(execFile);
 const UPSTREAM_URL = "https://github.com/miuuyy/codex-chatgpt-web.git";
@@ -30,7 +31,7 @@ async function defaultRun(executable, args, cwd) {
     maxBuffer: 2 * 1024 * 1024,
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
   });
-  return stdout.trim();
+  return args.includes("-z") ? stdout : stdout.trim();
 }
 
 function isSourceCheckout(repositoryRoot) {
@@ -65,6 +66,9 @@ function createSourceUpdateController({
   publish,
   logger,
   upstreamUrl = UPSTREAM_URL,
+  resolveConflict,
+  skipSameVersion = false,
+  acquireLock = acquireUpdateLock,
   run = defaultRun,
   now = () => new Date(),
 }) {
@@ -73,6 +77,10 @@ function createSourceUpdateController({
   let checked = false;
   let pending = null;
   let candidate = null;
+  let sameVersion = null;
+  const upToDateState = () => sameVersion
+    ? { status: "up-to-date", version: sameVersion, reason: "same-version" }
+    : { status: "up-to-date" };
 
   const transition = next => {
     state = next;
@@ -109,6 +117,21 @@ function createSourceUpdateController({
   async function fetchCandidate() {
     await assertRepository();
     await git("fetch", "upstream", "--prune");
+    sameVersion = null;
+    if (skipSameVersion) {
+      const local = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "package.json"), "utf8")).version;
+      const upstream = JSON.parse(await git("show", "upstream/main:package.json")).version;
+      for (const version of [local, upstream]) {
+        if (typeof version !== "string" || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$/.test(version)) {
+          throw new Error("Cannot compare invalid local or upstream package version");
+        }
+      }
+      logger?.info("launcher.source_update_versions", { local, upstream });
+      if (local === upstream) {
+        sameVersion = local;
+        return null;
+      }
+    }
     const commits = Number(await git("rev-list", "--count", "HEAD..upstream/main"));
     if (!Number.isSafeInteger(commits)) throw new Error("Could not determine upstream changes");
     if (commits === 0) return null;
@@ -128,7 +151,7 @@ function createSourceUpdateController({
     transition({ status: "checking" });
     try {
       candidate = await fetchCandidate();
-      return transition(candidate ? { status: "available", version: candidate.version } : { status: "up-to-date" });
+      return transition(candidate ? { status: "available", version: candidate.version } : upToDateState());
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger?.warn("launcher.source_update_check_failed", { message });
@@ -143,6 +166,7 @@ function createSourceUpdateController({
   }
 
   async function assertClean() {
+    await assertGitReady(repositoryRoot, git);
     if ((await git("status", "--porcelain", "--untracked-files=no")).length) {
       throw new Error("Commit or stash tracked changes before updating from upstream");
     }
@@ -157,12 +181,17 @@ function createSourceUpdateController({
     let merging = false;
     let committed = false;
     let backup;
+    let releaseLock;
     try {
+      releaseLock = await acquireLock(repositoryRoot, git);
       await assertRepository();
       await assertClean();
       const latest = await fetchCandidate();
-      if (!latest) return transition({ status: "up-to-date" });
+      if (!latest) return transition(upToDateState());
       await assertClean();
+      await assertNoLocalObstructions(repositoryRoot, git, latest.sha);
+      await git("var", "GIT_AUTHOR_IDENT");
+      await git("var", "GIT_COMMITTER_IDENT");
       const features = preserveFeatures(repositoryRoot);
       const stamp = now().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
       backup = `backup/pre-upstream-${stamp}`;
@@ -174,17 +203,21 @@ function createSourceUpdateController({
       merging = true;
       let mergeError;
       try {
-        await git("merge", "--no-commit", "--no-ff", latest.sha);
+        await git("merge", "--no-commit", "--no-ff", "--no-autostash", "--no-overwrite-ignore", latest.sha);
       } catch (error) {
         mergeError = error;
       }
-      await git("rm", "-f", "--ignore-unmatch", "--", ...EXCLUDED_DOCS);
-      const unresolved = await git("diff", "--name-only", "--diff-filter=U");
-      if (unresolved) throw new Error(`Upstream merge needs manual conflict resolution: ${unresolved}`);
-      if (mergeError) {
-        try { await git("rev-parse", "-q", "--verify", "MERGE_HEAD"); }
-        catch { throw mergeError; }
+      try {
+        await git("rev-parse", "-q", "--verify", "MERGE_HEAD");
+      } catch {
+        merging = false;
+        if (mergeError) throw new Error(gitErrorDetails(mergeError));
+        throw new Error("Git did not start a merge; retry the upstream check.");
       }
+      await git("rm", "-f", "--ignore-unmatch", "--", ...EXCLUDED_DOCS);
+      await resolveMergeConflicts(git, resolveConflict);
+      const unresolved = await git("diff", "--name-only", "--diff-filter=U");
+      if (unresolved) throw new Error(`Upstream merge needs manual conflict resolution: ${unresolved}\nThe automatic merge will be aborted. Backup: ${backup}; upstream commit: ${latest.sha}. Resolve these paths in a manual merge before running the updater again.`);
       if (await git("ls-files", "--", ...EXCLUDED_DOCS)) {
         throw new Error("Excluded upstream documentation remains tracked after merge");
       }
@@ -206,6 +239,7 @@ function createSourceUpdateController({
         "tests/chatgpt-web-harness.test.ts",
       ]], repositoryRoot);
       await git("diff", "--cached", "--check");
+      await git("diff", "--exit-code");
       await git("commit", "-m", `Merge upstream v${latest.releaseVersion}`);
       committed = true;
       merging = false;
@@ -214,7 +248,7 @@ function createSourceUpdateController({
         await git("push", "origin", "master:master");
       } catch (error) {
         transition({ status: "updated", version: latest.version });
-        throw new Error(`Source updated and committed locally, but push to origin failed: ${error.message}`);
+        throw new Error(`Source updated and committed locally, but push to origin failed: ${gitErrorDetails(error)}\nLocal commits and backup ${backup} are preserved. Fetch origin and reconcile origin/master before retrying if the push was rejected as non-fast-forward.`);
       }
       logger?.info("launcher.source_update_completed", { version: latest.version, backup });
       candidate = null;
@@ -229,7 +263,7 @@ function createSourceUpdateController({
           } catch {}
           if (mergeStarted) await git("merge", "--abort");
         } catch (abortError) {
-          throw new AggregateError([error, abortError], `Update failed and Git could not abort the merge (backup: ${backup})`);
+          error = new AggregateError([error, abortError], `Update failed: ${gitErrorDetails(error)}\nGit could not abort the merge: ${gitErrorDetails(abortError)}\nBackup: ${backup}. Preserve the working tree and resolve or abort the merge manually before retrying.`);
         }
       }
       transition(committed
@@ -237,6 +271,8 @@ function createSourceUpdateController({
         : { status: "available", version: candidate.version });
       logger?.warn("launcher.source_update_failed", { message: error.message, backup });
       throw error;
+    } finally {
+      releaseLock?.();
     }
   }
 
