@@ -5,6 +5,7 @@ const { promisify } = require("node:util");
 
 const execFileAsync = promisify(execFile);
 const UPSTREAM_URL = "https://github.com/miuuyy/codex-chatgpt-web.git";
+const EXCLUDED_DOCS = [":(top,glob)README*.md", ":(top)CONTRIBUTING.md", ":(top)SECURITY.md", ":(top)TROUBLESHOOTING.md"];
 const PROTECTED_FEATURES = Object.freeze({
   "src/adapters/chatgpt-web/index.ts": ["UserWaitStore", "userWaitStatePath"],
   "src/config.ts": ["userWaitStatePath"],
@@ -177,15 +178,15 @@ function createSourceUpdateController({
       } catch (error) {
         mergeError = error;
       }
-      await git("rm", "-f", "--ignore-unmatch", "--", ":(top,glob)README*.md");
+      await git("rm", "-f", "--ignore-unmatch", "--", ...EXCLUDED_DOCS);
       const unresolved = await git("diff", "--name-only", "--diff-filter=U");
       if (unresolved) throw new Error(`Upstream merge needs manual conflict resolution: ${unresolved}`);
       if (mergeError) {
         try { await git("rev-parse", "-q", "--verify", "MERGE_HEAD"); }
         catch { throw mergeError; }
       }
-      if (await git("ls-files", "--", ":(top,glob)README*.md")) {
-        throw new Error("Upstream README files remain tracked after merge");
+      if (await git("ls-files", "--", ...EXCLUDED_DOCS)) {
+        throw new Error("Excluded upstream documentation remains tracked after merge");
       }
       assertFeaturesPreserved(repositoryRoot, features);
       await git("diff", "--cached", "--check");

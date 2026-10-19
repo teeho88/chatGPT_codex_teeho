@@ -34,6 +34,9 @@ function fixture(t) {
   git(seed, "config", "user.email", "updater@example.test");
   write(seed, "package.json", JSON.stringify({ version: "1.0.0" }));
   write(seed, "README.md", "upstream readme\n");
+  for (const filename of ["CONTRIBUTING.md", "SECURITY.md", "TROUBLESHOOTING.md"]) {
+    write(seed, filename, "initial upstream documentation\n");
+  }
   write(seed, "feature.txt", "initial\n");
   write(seed, "src/adapters/chatgpt-web/index.ts", "UserWaitStore userWaitStatePath\n");
   git(seed, "add", ".");
@@ -46,13 +49,16 @@ function fixture(t) {
   git(checkout, "config", "user.email", "updater@example.test");
   git(checkout, "remote", "rename", "origin", "upstream");
   git(checkout, "remote", "add", "origin", origin);
-  git(checkout, "rm", "README.md");
+  git(checkout, "rm", "README.md", "CONTRIBUTING.md", "SECURITY.md", "TROUBLESHOOTING.md");
   git(checkout, "commit", "-m", "Preserve local README removal");
   git(checkout, "push", "origin", "master");
 
   const publishUpstream = ({ feature = "initial\n", version = "1.0.1" } = {}) => {
     write(seed, "package.json", JSON.stringify({ version }));
     write(seed, "README.md", "updated upstream readme\n");
+    for (const filename of ["CONTRIBUTING.md", "SECURITY.md", "TROUBLESHOOTING.md"]) {
+      write(seed, filename, "updated upstream documentation\n");
+    }
     write(seed, "feature.txt", feature);
     git(seed, "add", ".");
     git(seed, "commit", "-m", "Upstream update");
@@ -83,6 +89,7 @@ test("source update fetches, creates backup, resolves README deletion, tests, co
   assert.equal(git(f.checkout, "rev-parse", "HEAD"), git(f.origin, "rev-parse", "master"));
   assert.equal(git(f.checkout, "merge-base", "--is-ancestor", upstreamCommit, "HEAD"), "");
   assert.equal(git(f.checkout, "ls-files", "README*.md"), "");
+  assert.equal(git(f.checkout, "ls-files", "CONTRIBUTING.md", "SECURITY.md", "TROUBLESHOOTING.md"), "");
   assert.equal(git(f.checkout, "status", "--porcelain", "--untracked-files=no"), "");
   assert.match(git(f.checkout, "branch", "--list", "backup/pre-upstream-*"), /pre-upstream-/);
   assert.deepEqual(f.bunCalls.map(args => args.slice(0, 2)), [
