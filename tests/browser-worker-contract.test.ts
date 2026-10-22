@@ -875,6 +875,7 @@ test("two-part saved chats re-prove unchanged effort after the first message cre
   const page = Object.assign(new EventEmitter(), {
     url: () => url, isClosed: () => false,
     evaluate: async () => { throw new Error("No real browser in the transport fixture"); },
+    evaluateHandle: async () => ({ evaluate: async () => false, dispose: async () => {} }),
   });
   let sends = 0;
   const finished = new Error("final send reached with a current effort proof");
@@ -4705,14 +4706,18 @@ test("a staged Bigger Context part gets an acknowledgement window sized to its p
 });
 
 test("the suspension clock charges only tick gaps that mean the process was frozen", () => {
-  const clock = new ChatGptSuspensionClock(1_000, 5_000);
-  clock.tick(1_000);
-  clock.tick(2_000);
-  clock.tick(3_100);
+  let now = 0;
+  const clock = new ChatGptSuspensionClock(1_000, 5_000, () => now);
+  clock.tick(now = 1_000);
+  clock.tick(now = 2_000);
+  clock.tick(now = 3_100);
   expect(clock.suspendedMs()).toBe(0);
 
   // Fifteen minutes without a tick is a sleep; the ordinary interval is refunded from the charge.
-  clock.tick(3_100 + 15 * 60_000);
+  now = 3_100 + 15 * 60_000;
+  // The deadline reads before the delayed interval gets a chance to tick.
+  expect(clock.suspendedMs()).toBe(15 * 60_000 - 1_000);
+  clock.tick(now);
   expect(clock.suspendedMs()).toBe(15 * 60_000 - 1_000);
 });
 
