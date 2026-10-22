@@ -57,8 +57,8 @@ nhật tiếp tục; khi upstream không có commit mới, script vẫn có th�
 commit local. `-Check` chỉ fetch và so version, không hỏi commit/stash hay thay
 đổi working tree, kể cả khi có thay đổi chưa commit.
 
-Quy tắc bỏ qua theo version áp dụng cho BAT/CLI; updater trong launcher tiếp tục
-kiểm tra theo commit. Nếu push bị từ chối, script báo lỗi,
+Quy tắc bỏ qua theo version áp dụng cho BAT/CLI và launcher chạy từ source.
+Nếu push bị từ chối, script báo lỗi,
 giữ nguyên commit local và không force-push. Khi merge xung đột, script cho chọn
 local hoặc upstream cho từng file. Nếu hủy lựa chọn hoặc kiểm thử thất bại,
 script hủy merge và giữ nhánh backup để khôi phục.
@@ -114,19 +114,18 @@ Windows Release theo `.github/workflows/teeho-windows-release.yml`.
 
 ## Cập nhật trực tiếp trong launcher chạy từ source
 
-Khi chạy launcher từ checkout Git bằng chế độ development, launcher tự chạy
-`git fetch upstream --prune` khi mở ứng dụng. Nếu có commit mới trên `upstream/main`, nút
-**Update** sẽ xuất hiện. Bấm nút để chạy lần lượt các bước kiểm tra, tạo backup,
-merge giữ trạng thái xóa `README*.md`, xác minh tùy biến quan trọng, cài dependency,
-kiểm thử, commit và `git push origin master:master` như quy trình bên dưới.
+Khi chạy launcher từ checkout Git, launcher tự chạy `git fetch upstream --prune`
+khi mở ứng dụng và so sánh version trên `upstream/main` với version local. Khi
+có bản mới, nút **Update** sẽ xuất hiện. Trên Windows, bấm nút sẽ mở cửa sổ
+`UPDATE-UPSTREAM.bat` để cập nhật và đồng bộ lên `origin` theo đúng quy trình
+backup, merge, xử lý conflict, kiểm thử, commit và push phía trên. Nếu cây làm
+việc có thay đổi tracked, script hỏi chọn commit/stash/hủy; khi có conflict,
+script hỏi chọn bản local/upstream cho từng file. Nếu hủy, lỗi hoặc chưa merge
+được upstream, launcher sẽ không tự khởi động lại.
 
-Để đảm bảo an toàn, launcher chỉ cập nhật nhánh `master` khi không có thay đổi
-tracked chưa commit. Xung đột ngoài README hoặc bài kiểm thử thất bại sẽ hủy
-merge và giữ lại nhánh backup. Launcher không dùng force-push. Nếu push thất bại,
-merge đã commit vẫn nằm trên `master` để có thể publish thủ công.
-
-Sau khi cập nhật thành công, hãy khởi động lại launcher chạy từ source để nạp mã
-mới. Khi `master` được push lên `teeho88/chatGPT_codex_teeho`, workflow
+Khi cập nhật thành công, launcher tự chờ các tác vụ Codex/ChatGPT hiện tại kết
+thúc rồi tắt an toàn và khởi động lại để nạp mã mới. Quá trình chờ không hủy
+turn đang chạy. Khi `master` được push lên `teeho88/chatGPT_codex_teeho`, workflow
 `.github/workflows/teeho-windows-release.yml` tự kiểm thử, build installer Windows,
 và xuất bản GitHub Release dạng `vX.Y.Z-teeho.N` kèm `checksums.txt`. Bản `.exe`
 Teeho kiểm tra kênh Release này và dùng chính nút **Update** để tải bản mới,

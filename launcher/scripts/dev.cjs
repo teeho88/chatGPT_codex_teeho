@@ -5,6 +5,7 @@ const root = path.resolve(__dirname, "..");
 const vitePackage = require.resolve("vite/package.json", { paths: [root] });
 const viteBin = path.join(path.dirname(vitePackage), "bin", "vite.js");
 const electronBin = require("electron");
+const { SOURCE_RESTART_EXIT_CODE } = require("../electron/source-batch-update.cjs");
 const bun = process.env.CODEX_WEB_GPT_BUN || process.execPath;
 
 const helperBuild = spawnSync(bun, ["run", "scripts/build-browser-helper.ts"], {
@@ -23,6 +24,7 @@ const vite = spawn(process.execPath, [viteBin], {
 
 let electron;
 let stopped = false;
+const production = process.argv.includes("--production");
 
 const stop = () => {
   if (stopped) return;
@@ -43,8 +45,9 @@ const waitForVite = async () => {
   throw new Error("Vite did not become ready on 127.0.0.1:4178");
 };
 
-void waitForVite().then(() => {
-  electron = spawn(electronBin, [root, "--dev-profile"], {
+function launchElectron() {
+  if (stopped) return;
+  electron = spawn(electronBin, [root, ...(production ? [] : ["--dev-profile"])], {
     cwd: root,
     stdio: "inherit",
     env: {
@@ -55,6 +58,10 @@ void waitForVite().then(() => {
     },
   });
   electron.once("exit", (code) => {
+    if (code === SOURCE_RESTART_EXIT_CODE && !stopped) {
+      launchElectron();
+      return;
+    }
     stop();
     process.exitCode = code ?? 0;
   });
@@ -63,7 +70,9 @@ void waitForVite().then(() => {
     stop();
     process.exitCode = 1;
   });
-}).catch((error) => {
+}
+
+void waitForVite().then(launchElectron).catch((error) => {
   console.error(error);
   stop();
   process.exitCode = 1;

@@ -108,6 +108,7 @@ function createSourceUpdateController({
   upstreamUrl = UPSTREAM_URL,
   resolveConflict,
   skipSameVersion = false,
+  runBatch,
   acquireLock = acquireUpdateLock,
   run = defaultRun,
   now = () => new Date(),
@@ -329,7 +330,24 @@ function createSourceUpdateController({
 
   async function beginInstall() {
     if (pending) throw new Error("A source update is already running");
-    pending = update();
+    if (runBatch) {
+      if (state.status !== "available" || !candidate) throw new Error("No source update is available");
+      const selected = candidate;
+      pending = (async () => {
+        transition({ status: "installing", version: selected.version });
+        try {
+          await runBatch(repositoryRoot);
+          await git("merge-base", "--is-ancestor", selected.sha, "HEAD");
+          candidate = null;
+          return transition({ status: "updated", version: selected.version });
+        } catch (error) {
+          transition({ status: "available", version: selected.version });
+          throw error;
+        }
+      })();
+    } else {
+      pending = update();
+    }
     try { return await pending; }
     finally { pending = null; }
   }

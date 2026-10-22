@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([switch]$Check)
+param([switch]$Check, [switch]$NoPause)
 
 $ErrorActionPreference = 'Stop'
 $node = (Get-Command node -ErrorAction Stop).Source

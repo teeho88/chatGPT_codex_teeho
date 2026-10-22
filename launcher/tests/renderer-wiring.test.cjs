@@ -144,6 +144,43 @@ test("normal shutdown persists the ChatGPT session before closing browser views"
   assert.ok(destroy > persist, "browser views must close only after session persistence completes");
 });
 
+test("source update waits for idle browser work before restarting without cancelling turns", async () => {
+  const vm = require("node:vm");
+  const source = electronMain.slice(electronMain.indexOf("function scheduleSourceRestart(logger)"), electronMain.indexOf("async function requestQuit("));
+  const tabs = new Map([["turn-1", { status: "running" }]]);
+  const warnings = [];
+  let tick;
+  let restarts = 0;
+  let busy = true;
+  const sandbox = {
+    sourceRestartTimer: null, sourceRestartChecking: false,
+    quitting: false, shutdownInProgress: false, exitCommitted: false,
+    lastOperation: null,
+    runtimeHost: { currentOperation: () => busy ? "runtime-task" : null },
+    browserHost: { currentOperation: () => null, activeTraceId: null, turnTabs: tabs },
+    setInterval: callback => { tick = callback; return { unref() {} }; },
+    requestQuit: async options => {
+      assert.equal(options.sourceRestart, true);
+      restarts++;
+      return { ok: true };
+    },
+  };
+  vm.runInNewContext(`${source}\nthis.scheduleRestart = scheduleSourceRestart;`, sandbox);
+  sandbox.scheduleRestart({ warn: (_message, details) => warnings.push(details) });
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  await settle();
+  assert.equal(restarts, 0);
+  busy = false;
+  tick();
+  await settle();
+  assert.equal(restarts, 0);
+  tabs.get("turn-1").status = "ready";
+  tick();
+  await settle();
+  assert.equal(restarts, 1);
+  assert.deepEqual(warnings, []);
+});
+
 test("setup preserves session-check failures and never installs without verified authentication", async () => {
   const vm = require("node:vm");
   const source = electronMain.slice(

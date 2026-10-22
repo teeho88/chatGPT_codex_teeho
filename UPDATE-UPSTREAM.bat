@@ -1,6 +1,8 @@
 @echo off
 setlocal
 title Teeho - Update upstream and push
+set "NO_PAUSE="
+if /i "%~1"=="-NoPause" set "NO_PAUSE=1"
 
 pushd "%~dp0"
 if errorlevel 1 (
@@ -23,6 +25,7 @@ if not "%result%"=="0" (
     echo [SUCCESS] Script finished successfully.
 )
 echo.
-pause
+if not defined NO_PAUSE pause
+if defined NO_PAUSE if not "%result%"=="0" pause
 popd
 exit /b %result%

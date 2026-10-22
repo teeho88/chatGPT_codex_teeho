@@ -39,6 +39,7 @@ const { DEVELOPMENT_PROFILE, resolveLauncherProfile } = require("./profile.cjs")
 const { runtimeBundlePaths } = require("./runtime-command.cjs");
 const { createUpdateController } = require("./update.cjs");
 const { createSourceUpdateController, isSourceCheckout } = require("./source-update.cjs");
+const { runUpstreamBatch, SOURCE_RESTART_EXIT_CODE } = require("./source-batch-update.cjs");
 const {
   createStateStore,
   nextSessionRefreshReminderAt,
@@ -110,6 +111,8 @@ let lastOperation = null;
 let catalogVerificationTimer = null;
 let catalogVerificationInFlight = false;
 let updateController = null;
+let sourceRestartTimer = null;
+let sourceRestartChecking = false;
 let limitsController = null;
 
 function findFreePort() {
@@ -1058,7 +1061,10 @@ function registerIpc({ logger, stateStore }) {
   handle("launcher:update-install", async () => {
     if (!updateController) throw new Error("Launcher updates are unavailable");
     const launch = await updateController.beginInstall();
-    if (updateController.sourceMode) return true;
+    if (updateController.sourceMode) {
+      if (launch.status === "updated") scheduleSourceRestart(logger);
+      return true;
+    }
     const result = await requestQuit();
     if (!result.ok) {
       updateController.cancelInstall(launch);
@@ -1079,7 +1085,28 @@ function registerIpc({ logger, stateStore }) {
   });
 }
 
-async function requestQuit() {
+function scheduleSourceRestart(logger) {
+  if (sourceRestartTimer) return;
+  const attempt = async () => {
+    if (sourceRestartChecking || quitting || shutdownInProgress || exitCommitted
+      || runtimeHost?.currentOperation() || browserHost?.currentOperation()
+      || browserHost?.activeTraceId
+      || [...(browserHost?.turnTabs?.values() || [])].some(tab => tab.status === "running")
+      || lastOperation?.status === "running") return;
+    sourceRestartChecking = true;
+    try {
+      const result = await requestQuit({ sourceRestart: true });
+      if (!result.ok) logger.warn("launcher.source_restart_waiting", { message: result.message });
+    } finally {
+      sourceRestartChecking = false;
+    }
+  };
+  sourceRestartTimer = setInterval(() => { void attempt(); }, 5_000);
+  sourceRestartTimer.unref?.();
+  void attempt();
+}
+
+async function requestQuit({ sourceRestart = false } = {}) {
   if (shutdownInProgress || exitCommitted) {
     return { ok: false, message: "Launcher shutdown is already in progress" };
   }
@@ -1089,20 +1116,34 @@ async function requestQuit() {
     if (activeOperation) {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Codex Web GPT`);
     }
-    await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
+    if (sourceRestart) await runtimeSupervisor?.shutdown({ cancelActiveTurns: false, force: false });
+    else await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
     stopCatalogVerificationMonitor();
     quitting = true;
     await browserHost?.persistSession();
     browserHost?.destroy();
     await browserControl?.close();
     exitCommitted = true;
-    app.quit();
+    if (sourceRestart && isDev) {
+      app.exit(SOURCE_RESTART_EXIT_CODE);
+    } else {
+      if (sourceRestart) {
+        for (const [key, value] of Object.entries(launchEnvironment)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+        app.relaunch({ args: process.argv.slice(1).filter(argument => argument !== "--hidden") });
+      }
+      app.quit();
+    }
     return { ok: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     quitting = false;
-    showMainWindow();
-    publishOperation({ name: "launcher-quit", status: "failed", message });
+    if (!sourceRestart) {
+      showMainWindow();
+      publishOperation({ name: "launcher-quit", status: "failed", message });
+    }
     return { ok: false, message };
   } finally {
     shutdownInProgress = false;
@@ -1265,6 +1306,8 @@ async function start() {
   updateController = !app.isPackaged && isSourceCheckout(sourceRepository)
     ? createSourceUpdateController({
       repositoryRoot: sourceRepository,
+      skipSameVersion: true,
+      ...(process.platform === "win32" ? { runBatch: runUpstreamBatch } : {}),
       publish: (state) => send("launcher:update-state", state),
       logger,
     })

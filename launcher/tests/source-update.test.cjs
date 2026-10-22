@@ -98,6 +98,39 @@ test("source update fetches, creates backup, resolves README deletion, tests, co
   assert.equal(await controller.checkOnce().then(state => state.status), "updated");
 });
 
+test("source launcher checks upstream version and delegates installation to the batch script", async t => {
+  const f = fixture(t);
+  const sha = f.publishUpstream();
+  let invoked = 0;
+  const controller = f.controller({
+    skipSameVersion: true,
+    runBatch: async root => {
+      assert.equal(root, f.checkout);
+      invoked += 1;
+      git(f.checkout, "merge", "--no-ff", "--no-edit", "-s", "ours", sha);
+    },
+  });
+  assert.deepEqual(await controller.checkOnce(), { status: "available", version: "1.0.1" });
+  assert.deepEqual(await controller.beginInstall(), { status: "updated", version: "1.0.1" });
+  assert.equal(invoked, 1);
+  assert.equal(git(f.checkout, "merge-base", "--is-ancestor", sha, "HEAD"), "");
+});
+
+test("source launcher does not restart after a failed or incomplete batch update", async t => {
+  const f = fixture(t);
+  f.publishUpstream();
+  let fail = true;
+  const controller = f.controller({ skipSameVersion: true, runBatch: async () => {
+    if (fail) throw new Error("Batch exited with status 1");
+  } });
+  await controller.checkOnce();
+  await assert.rejects(controller.beginInstall(), /Batch exited with status 1/);
+  assert.equal(controller.getState().status, "available");
+  fail = false;
+  await assert.rejects(controller.beginInstall());
+  assert.equal(controller.getState().status, "available");
+});
+
 test("source updater refuses dirty tracked files without touching them", async t => {
   const f = fixture(t);
   f.publishUpstream();
