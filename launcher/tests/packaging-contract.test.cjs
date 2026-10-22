@@ -27,7 +27,8 @@ test("Windows one-click entry runs the production launcher from its source scrip
   const batch = fs.readFileSync(path.join(repositoryRoot, "START-APP.bat"), "utf8");
   const powerShell = fs.readFileSync(path.join(repositoryRoot, "scripts", "start-app.ps1"), "utf8");
   assert.match(batch, /-File "%~dp0scripts\\start-app\.ps1" -BunPath "%APP_BUN%" -ScriptPath "scripts\/start-launcher\.ts"/);
-  assert.match(powerShell, /Start-Process -FilePath \$bunExecutable -ArgumentList @\('run', \$ScriptPath, '--production'\)/);
+  assert.match(powerShell, /\$launchArgs = @\('run', \$ScriptPath, '--production'\)/);
+  assert.match(powerShell, /Start-Process -FilePath \$bunExecutable -ArgumentList \$launchArgs/);
   assert.match(powerShell, /CODEX_WEB_GPT_UI_READY_FILE/);
 });
 

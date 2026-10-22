@@ -71,6 +71,8 @@ Trên Windows chưa bật quyền tạo symbolic link, hai test integration có 
 
 Nhấp đúp `START-APP.bat` ở thư mục gốc để chạy one-click. Script dùng profile thông thường (cùng cấu hình ChatGPT và Codex với bản cài), tự cài dependency và đóng terminal khi UI hiện lên. Nếu khởi động lỗi, terminal giữ lại thông báo và đường dẫn log.
 
+Trên Windows, bản chạy source có thể bật **Launch at login** trong Settings để khởi động cùng Windows. Tùy chọn này đăng ký riêng `START-APP.bat` thông qua Windows Run, chạy ẩn trong khay hệ thống sau khi đã hoàn tất onboarding; tắt tùy chọn sẽ xóa đăng ký. Nếu di chuyển thư mục source, hãy mở lại ứng dụng và bật lại tùy chọn. Profile DEV (`bun run app:dev`) không đăng ký khởi động cùng Windows.
+
 Để chạy cùng profile thông thường từ PowerShell (tự động dùng production):
 
 ```powershell

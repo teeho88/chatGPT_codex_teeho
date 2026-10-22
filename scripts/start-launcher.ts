@@ -22,4 +22,4 @@ function run(args: string[], cwd: string): void {
 
 run(["install", "--frozen-lockfile"], root);
 run(["install", "--frozen-lockfile"], launcher);
-run(["run", "dev", ...(process.argv.includes("--production") ? ["--production"] : [])], launcher);
+run(["run", "dev", ...(process.argv.includes("--production") ? ["--production"] : []), ...(process.argv.includes("--hidden") ? ["--hidden"] : [])], launcher);

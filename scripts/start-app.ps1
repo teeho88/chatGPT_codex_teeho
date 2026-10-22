@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$BunPath,
-    [Parameter(Mandatory = $true)][string]$ScriptPath
+    [Parameter(Mandatory = $true)][string]$ScriptPath,
+    [switch]$Hidden
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,7 +20,9 @@ try {
         throw "Source entry script not found: $sourceEntry"
     }
     Write-Host "Startup logs: $runDirectory"
-    $appProcess = Start-Process -FilePath $bunExecutable -ArgumentList @('run', $ScriptPath, '--production') -WorkingDirectory $projectRoot -WindowStyle Hidden -RedirectStandardOutput $outputPath -RedirectStandardError $errorPath -PassThru
+    $launchArgs = @('run', $ScriptPath, '--production')
+    if ($Hidden) { $launchArgs += '--hidden' }
+    $appProcess = Start-Process -FilePath $bunExecutable -ArgumentList $launchArgs -WorkingDirectory $projectRoot -WindowStyle Hidden -RedirectStandardOutput $outputPath -RedirectStandardError $errorPath -PassThru
 
     while (-not (Test-Path -LiteralPath $readyPath)) {
         $appProcess.Refresh()

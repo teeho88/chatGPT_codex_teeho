@@ -25,6 +25,7 @@ const vite = spawn(process.execPath, [viteBin], {
 let electron;
 let stopped = false;
 const production = process.argv.includes("--production");
+const hidden = process.argv.includes("--hidden");
 
 const stop = () => {
   if (stopped) return;
@@ -47,7 +48,7 @@ const waitForVite = async () => {
 
 function launchElectron() {
   if (stopped) return;
-  electron = spawn(electronBin, [root, ...(production ? [] : ["--dev-profile"])], {
+  electron = spawn(electronBin, [root, ...(production ? [] : ["--dev-profile"]), ...(hidden ? ["--hidden"] : [])], {
     cwd: root,
     stdio: "inherit",
     env: {

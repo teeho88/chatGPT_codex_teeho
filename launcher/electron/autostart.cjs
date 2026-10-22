@@ -1,9 +1,48 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 const { writePrivateFileAtomic } = require("./atomic-file.cjs");
 
 const LINUX_DESKTOP_NAME = "dev.codexwebgpt.launcher.desktop";
+const WINDOWS_RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+const WINDOWS_SOURCE_VALUE = "Codex Web GPT Teeho Source";
+
+function sourceAutostartCommand(script = path.resolve(__dirname, "..", "..", "scripts", "source-autostart.ps1")) {
+  return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "${script}"`;
+}
+
+function sourceAutostartRegistry(args, run = spawnSync) {
+  const result = run("reg.exe", args, { encoding: "utf8", windowsHide: true });
+  if (result.error) throw result.error;
+  return result;
+}
+
+function getWindowsSourceAutostart(run = spawnSync) {
+  const result = sourceAutostartRegistry(["query", WINDOWS_RUN_KEY, "/v", WINDOWS_SOURCE_VALUE], run);
+  if (result.status === 1) return { supported: true, enabled: false };
+  if (result.status !== 0) throw new Error(`Cannot read Windows source autostart: ${result.stderr || result.stdout}`);
+  const value = /^\s+.+?\s+REG_SZ\s+(.+)\s*$/mi.exec(result.stdout)?.[1]?.trim();
+  return { supported: true, enabled: value === sourceAutostartCommand() };
+}
+
+function setWindowsSourceAutostart(enabled, run = spawnSync) {
+  if (enabled) {
+    const script = path.resolve(__dirname, "..", "..", "scripts", "source-autostart.ps1");
+    const batch = path.resolve(__dirname, "..", "..", "START-APP.bat");
+    if (!fs.existsSync(script) || !fs.existsSync(batch)) {
+      throw new Error("Windows source startup scripts are missing");
+    }
+  }
+  const args = enabled
+    ? ["add", WINDOWS_RUN_KEY, "/v", WINDOWS_SOURCE_VALUE, "/t", "REG_SZ", "/d", sourceAutostartCommand(), "/f"]
+    : ["delete", WINDOWS_RUN_KEY, "/v", WINDOWS_SOURCE_VALUE, "/f"];
+  const result = sourceAutostartRegistry(args, run);
+  if (result.status !== 0 && !(result.status === 1 && !enabled && !getWindowsSourceAutostart(run).enabled)) {
+    throw new Error(`Cannot ${enabled ? "enable" : "disable"} Windows source autostart: ${result.stderr || result.stdout}`);
+  }
+  return requireAutostartState(getWindowsSourceAutostart(run), enabled);
+}
 
 function linuxDesktopPath() {
   const configHome = process.env.XDG_CONFIG_HOME?.trim() || path.join(os.homedir(), ".config");
@@ -53,7 +92,10 @@ function requireAutostartState(result, desired) {
 }
 
 function setAutostart(app, enabled) {
-  if (!app.isPackaged) return { supported: false, enabled: Boolean(enabled) };
+  if (!app.isPackaged) {
+    if (process.platform === "win32") return setWindowsSourceAutostart(enabled);
+    return { supported: false, enabled: false };
+  }
   if (process.platform === "linux") {
     const target = linuxDesktopPath();
     if (enabled) {
@@ -81,7 +123,10 @@ function setAutostart(app, enabled) {
 }
 
 function getAutostart(app) {
-  if (!app.isPackaged) return { supported: false, enabled: false };
+  if (!app.isPackaged) {
+    if (process.platform === "win32") return getWindowsSourceAutostart();
+    return { supported: false, enabled: false };
+  }
   if (process.platform === "linux") {
     return { supported: true, enabled: linuxAutostartMatches(app) };
   }
@@ -102,4 +147,9 @@ module.exports = {
   linuxDesktopPath,
   requireAutostartState,
   setAutostart,
+  getWindowsSourceAutostart,
+  setWindowsSourceAutostart,
+  sourceAutostartCommand,
+  WINDOWS_RUN_KEY,
+  WINDOWS_SOURCE_VALUE,
 };

@@ -472,7 +472,7 @@ function createWindow({ logger, stateStore, windowStatePath, startHidden }) {
   for (const event of ["enter-full-screen", "leave-full-screen", "maximize", "unmaximize"]) {
     window.on(event, () => send("launcher:window-state-changed", windowStateSnapshot(window)));
   }
-  window.once("show", () => {
+  window.once("ready-to-show", () => {
     if (!app.isPackaged && process.env.CODEX_WEB_GPT_UI_READY_FILE) {
       try {
         fs.writeFileSync(process.env.CODEX_WEB_GPT_UI_READY_FILE, "ready\n");
@@ -933,6 +933,7 @@ function registerIpc({ logger, stateStore }) {
     if (IS_DEV_PROFILE) throw new Error("The isolated DEV launcher is started explicitly from the repository CLI");
     const desired = enabled === true;
     const autostart = setAutostart(app, desired);
+    if (!autostart.supported) throw new Error("Launcher autostart is unavailable for this source platform");
     return {
       state: stateStore.update({ autoStart: desired }),
       ...autostart,
