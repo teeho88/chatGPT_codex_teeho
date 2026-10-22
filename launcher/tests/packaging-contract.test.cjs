@@ -14,8 +14,21 @@ const manifest = JSON.parse(fs.readFileSync(path.join(launcherRoot, "package.jso
 const repositoryManifest = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "package.json"), "utf8"));
 
 test("the public launcher command uses the Electron bootstrap", () => {
-  assert.equal(repositoryManifest.scripts.launcher, "bun run scripts/start-launcher.ts");
+  assert.equal(repositoryManifest.scripts.launcher, "bun run scripts/start-launcher.ts --production");
   assert.equal(repositoryManifest.scripts.launcher, repositoryManifest.scripts.app);
+  assert.equal(repositoryManifest.scripts["app:dev"], "bun run scripts/start-launcher.ts");
+  const launcherScript = fs.readFileSync(path.join(repositoryRoot, "scripts", "start-launcher.ts"), "utf8");
+  const electronScript = fs.readFileSync(path.join(launcherRoot, "scripts", "dev.cjs"), "utf8");
+  assert.match(launcherScript, /process\.argv\.includes\("--production"\)/);
+  assert.match(electronScript, /process\.argv\.includes\("--production"\)/);
+});
+
+test("Windows one-click entry runs the production launcher from its source script", () => {
+  const batch = fs.readFileSync(path.join(repositoryRoot, "START-APP.bat"), "utf8");
+  const powerShell = fs.readFileSync(path.join(repositoryRoot, "scripts", "start-app.ps1"), "utf8");
+  assert.match(batch, /-File "%~dp0scripts\\start-app\.ps1" -BunPath "%APP_BUN%" -ScriptPath "scripts\/start-launcher\.ts"/);
+  assert.match(powerShell, /Start-Process -FilePath \$bunExecutable -ArgumentList @\('run', \$ScriptPath, '--production'\)/);
+  assert.match(powerShell, /CODEX_WEB_GPT_UI_READY_FILE/);
 });
 
 test("the full verification gate audits launcher dependencies", () => {

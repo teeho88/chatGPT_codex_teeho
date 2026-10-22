@@ -472,6 +472,15 @@ function createWindow({ logger, stateStore, windowStatePath, startHidden }) {
   for (const event of ["enter-full-screen", "leave-full-screen", "maximize", "unmaximize"]) {
     window.on(event, () => send("launcher:window-state-changed", windowStateSnapshot(window)));
   }
+  window.once("show", () => {
+    if (!app.isPackaged && process.env.CODEX_WEB_GPT_UI_READY_FILE) {
+      try {
+        fs.writeFileSync(process.env.CODEX_WEB_GPT_UI_READY_FILE, "ready\n");
+      } catch (error) {
+        logger.warn("launcher.ui_ready_signal_failed", { message: error.message });
+      }
+    }
+  });
   window.once("ready-to-show", () => {
     if (!state.onboardingComplete && !Number.isFinite(windowState.bounds.x)) window.center();
     if (windowState.maximized) window.maximize();
