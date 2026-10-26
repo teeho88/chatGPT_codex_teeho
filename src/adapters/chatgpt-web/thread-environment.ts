@@ -133,7 +133,8 @@ function conflictingAuthorityFields(claim: ChatGptEnvironmentClaim, right: ChatG
   const nativeRoots = new Set(right.roots.map(pathIdentity));
   const nativeGrants = new Set([...right.roots, ...right.writableRoots].map(pathIdentity));
   const fields: string[] = [];
-  if (pathIdentity(left.cwd) !== pathIdentity(right.cwd)) fields.push("cwd");
+  if ((left.cwd !== undefined && pathIdentity(left.cwd) !== pathIdentity(right.cwd))
+    || !left.roots.some(root => contains(root, right.cwd))) fields.push("cwd");
   // Codex 0.163 omits workspace_roots in some rollouts while its envelope still
   // lists output directories. Every extra claimed root must be an exact native
   // grant, and no native workspace may disappear. Return only native authority.
@@ -179,18 +180,21 @@ export class ChatGptThreadEnvironmentStore {
     try {
       const claim = extractChatGptTurnEnvironmentClaim(parsed);
       const environment = claim.environment;
-      if (this.codexHomes.length > 1
+      if (environment.cwd === undefined || this.codexHomes.length > 1
         || (environment.sandboxPolicy.type !== "dangerFullAccess" && !claim.statesNetworkAccess)) {
         // A shared bridge must prove the current native owner even for complete envelopes.
         // Modern envelopes state filesystem access only. Resolve the current native policy on
         // the first round too: absence of a network statement is not a disabled-network grant.
+        // Likewise, workspace roots do not identify cwd; only this turn's native record can.
         initialClaim = claim;
         throw new MissingTrustedCodexEnvironmentError(
-          this.codexHomes.length > 1 ? "current native task ownership" : "network access",
+          environment.cwd === undefined ? "cwd"
+            : this.codexHomes.length > 1 ? "current native task ownership" : "network access",
         );
       }
-      if (identity.threadId) this.set(identity.threadId, environment);
-      return environment;
+      const completeEnvironment = { ...environment, cwd: environment.cwd };
+      if (identity.threadId) this.set(identity.threadId, completeEnvironment);
+      return completeEnvironment;
     } catch (error) {
       if (!(error instanceof MissingTrustedCodexEnvironmentError) || !identity.threadId) throw error;
       const hasCurrentContext = hasCurrentChatGptEnvironmentContext(parsed);
@@ -199,7 +203,7 @@ export class ChatGptThreadEnvironmentStore {
       // Root tasks also retain unattributed environment fragments after compaction.
       // They are historical only when the exact native record predates this task;
       // neither the fragment nor the cache supplies the current authority.
-      const historicalMessages = hasCurrentContext && !currentCompaction
+      const historicalMessages = hasCurrentContext && !currentCompaction && !initialClaim
         ? unattributedChatGptEnvironmentMessages(parsed) : undefined;
       const steeringClaim = hasCurrentContext && !currentCompaction
         ? extractChatGptSteeringEnvironmentClaim(parsed) : undefined;
@@ -240,7 +244,9 @@ export class ChatGptThreadEnvironmentStore {
           if (!rollout.workspaceRootsDeclared
             && rolloutEnvironment.sandboxPolicy.type === "dangerFullAccess"
             && currentClaim?.environment.sandboxPolicy.type === "dangerFullAccess"
-            && pathIdentity(currentClaim.environment.cwd) === pathIdentity(rolloutEnvironment.cwd)) {
+            && (currentClaim.environment.cwd === undefined
+              || pathIdentity(currentClaim.environment.cwd) === pathIdentity(rolloutEnvironment.cwd))
+            && currentClaim.environment.roots.some(root => contains(root, rolloutEnvironment.cwd))) {
             rolloutEnvironment = {
               ...rolloutEnvironment,
               roots: [...currentClaim.environment.roots],

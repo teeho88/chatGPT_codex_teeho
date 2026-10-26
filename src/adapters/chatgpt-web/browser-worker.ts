@@ -735,7 +735,7 @@ export async function ensureChatGptPersonalizedConnectorAccess(
     );
   } catch (error) {
     if (error instanceof ChatGptPersistentBrowserStateError) throw error;
-    const guidance = " If the connector works in a regular chat, enable Launcher → Settings → Save chats in ChatGPT, finish active tasks, then restart the launcher and Codex. Task chats will be kept in your ChatGPT history.";
+    const guidance = " Finish active tasks, then restart the launcher and Codex to retry connector verification in a regular chat.";
     if (!abortSignal?.aborted && (
       error instanceof ChatGptPersonalizationDeadlineError
       || deadlineController.signal.aborted
@@ -1532,7 +1532,7 @@ export interface ResolvedBrowserConfig {
   turnTimeoutMs?: number;
   headed: boolean;
   autoApproveToolCalls: boolean;
-  useSavedChats: boolean;
+  useSavedChats?: boolean;
 }
 
 export function chatGptTurnIsComplete(state: {
@@ -2315,7 +2315,7 @@ export function resolveBrowserConfig(provider: CodexProviderConfig): ResolvedBro
     ...(turnTimeoutMs !== undefined ? { turnTimeoutMs } : {}),
     headed: configured.headed !== false,
     autoApproveToolCalls: configured.autoApproveToolCalls === true,
-    useSavedChats: configured.useSavedChats === true,
+    ...(configured.useSavedChats !== undefined ? { useSavedChats: configured.useSavedChats } : {}),
   };
 }
 
@@ -2919,9 +2919,11 @@ export class ChatGptBrowserWorker {
   private async prepareChatSurface(
     page: Page,
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
-    useSavedChats = false,
+    useSavedChatsOrSignal: boolean | AbortSignal = true,
     abortSignal?: AbortSignal,
   ): Promise<Locator> {
+    const useSavedChats = typeof useSavedChatsOrSignal === "boolean" ? useSavedChatsOrSignal : true;
+    if (typeof useSavedChatsOrSignal !== "boolean") abortSignal = useSavedChatsOrSignal;
     throwIfPromptAttachmentAborted(abortSignal);
     // Launcher verification refreshes its owned page before attaching Playwright so a newly added
     // connector is present in the catalog. Navigating again here destroys that freshly hydrated

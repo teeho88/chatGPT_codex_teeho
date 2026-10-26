@@ -469,7 +469,8 @@ test("a Temporary Chat without a personalization menu reports recovery before th
       status: 424,
       code: "connector_not_found",
       message: "ChatGPT Temporary Chat does not expose a personalization menu and the configured connector is unavailable."
-        + " Reload ChatGPT and retry. If a personalization control is available, choose Personalized before sending a message.",
+        + " Reload ChatGPT and retry. If a personalization control is available, choose Personalized before sending a message."
+        + " Finish active tasks, then restart the launcher and Codex to retry connector verification in a regular chat.",
     });
   expect(clicks).toBe(0);
   expect(escapePresses).toBe(1);
@@ -635,7 +636,7 @@ test("the absolute personalization deadline always returns the connector deadlin
       .rejects.toMatchObject({
         status: 424,
         code: "connector_not_found",
-        message: expect.stringContaining("enable Launcher → Settings → Save chats in ChatGPT"),
+        message: expect.stringContaining("restart the launcher and Codex to retry connector verification in a regular chat"),
       });
   } finally {
     Date.now = originalNow;
