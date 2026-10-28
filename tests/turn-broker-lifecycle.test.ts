@@ -383,6 +383,38 @@ test("bounded broker calls preserve server-owned closure before advancing the li
   }
 });
 
+test("activity cleanup ACK settles on a complete frame without waiting for pipe closure", async () => {
+  let peer!: Socket;
+  let finishFrame!: () => void;
+  const frameStarted = new Promise<void>(resolve => { finishFrame = resolve; });
+  let newline!: () => void;
+  const broker = unansweredBrokerEndpoint("cgw-activity-ack-", socket => {
+    peer = socket;
+    socket.once("data", bytes => {
+      const request = JSON.parse(bytes.toString().trim());
+      const frame = JSON.stringify({ id: request.id, result: { completed: true } }) + "\n";
+      socket.write(frame.slice(0, -1));
+      newline = () => { socket.write("\n"); };
+      finishFrame();
+    });
+  });
+  await broker.listen();
+  try {
+    let settled = false;
+    const call = callTurnBroker(broker.socketPath, {
+      method: "activity_complete", token: "turn_cleanup", activityId: "activity_0123456789abcdef",
+    }, 1_000).then(result => { settled = true; return result; });
+    await frameStarted;
+    await Bun.sleep(20);
+    expect(settled).toBeFalse();
+    newline();
+    await expect(call).resolves.toEqual({ completed: true });
+  } finally {
+    peer?.destroy();
+    await broker.close();
+  }
+});
+
 test("broker frame settlement still rejects errors, wrong identities and incomplete replies", async () => {
   for (const [reply, expected] of [
     [(id: string) => JSON.stringify({ id, error: "claim rejected" }) + "\n", "claim rejected"],

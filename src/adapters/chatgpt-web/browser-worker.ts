@@ -2516,7 +2516,7 @@ export class ChatGptBrowserWorker {
 
   inspectSession(detectCapabilities: boolean): Promise<{
     authenticated: true;
-    temporary: true;
+    newChat: true;
     url: string;
     solAvailable?: boolean;
     extraHighAvailable?: boolean;
@@ -4343,7 +4343,7 @@ export class ChatGptBrowserWorker {
 
   private async inspectSessionExclusive(detectCapabilities: boolean): Promise<{
     authenticated: true;
-    temporary: true;
+    newChat: true;
     url: string;
     solAvailable?: boolean;
     extraHighAvailable?: boolean;
@@ -4352,9 +4352,9 @@ export class ChatGptBrowserWorker {
     const page = await this.ensurePage();
     await this.prepareChatSurface(page);
     const url = page.url();
-    if (!detectCapabilities) return { authenticated: true, temporary: true, url };
+    if (!detectCapabilities) return { authenticated: true, newChat: true, url };
     const capabilities = await detectChatGptAccountCapabilities(page);
-    return { authenticated: true, temporary: true, url, ...capabilities };
+    return { authenticated: true, newChat: true, url, ...capabilities };
   }
 
   private async smokeTestExclusive(abortSignal?: AbortSignal): Promise<{ effort: string; response: string }> {

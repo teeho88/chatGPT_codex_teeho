@@ -1411,7 +1411,7 @@ export async function callTurnBroker<T>(
   signal?: AbortSignal,
 ): Promise<T> {
   const id = opaqueId("request");
-  const settleOnResponseFrame = timeoutMs === null;
+  const settleOnResponseFrame = timeoutMs === null || request.method === "activity_complete";
   // The wire protocol requires a client-owned activity identity. Most callers never need to see
   // it; the MCP server supplies its own so it can retire an ambiguously delivered claim, while
   // lower-level diagnostics receive an equally client-generated identity here.
@@ -1487,9 +1487,10 @@ export async function callTurnBroker<T>(
       }
       response = parsed;
       if (settleOnResponseFrame) {
-        // Long-polls finish on the full frame; their peer can otherwise keep both halves open.
+        // Long-polls and activity acknowledgements settle on the complete response frame.
         finishResponse();
-        socket.destroy();
+        if (request.method === "activity_complete") socket.end();
+        else socket.destroy();
       }
     });
   });

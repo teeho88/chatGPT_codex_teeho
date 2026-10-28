@@ -19,6 +19,28 @@ import { estimateCompiledChatGptWebInputTokens } from "../src/adapters/chatgpt-w
 import { estimateTokens } from "../src/lib/token-estimate";
 import { chatGptHtmlToMarkdown } from "../src/adapters/chatgpt-web/markdown";
 
+test("session inspection returns the new-chat evidence required by the launcher", async () => {
+  let prepared = false;
+  const page = { url: () => "https://chatgpt.com/" };
+  const fixture = {
+    ensurePage: async () => page,
+    prepareChatSurface: async (target: unknown) => {
+      expect(target).toBe(page);
+      prepared = true;
+    },
+  };
+  const inspect = (ChatGptBrowserWorker.prototype as unknown as {
+    inspectSessionExclusive(detectCapabilities: boolean): Promise<unknown>;
+  }).inspectSessionExclusive;
+
+  expect(await inspect.call(fixture, false)).toEqual({
+    authenticated: true,
+    newChat: true,
+    url: "https://chatgpt.com/",
+  });
+  expect(prepared).toBe(true);
+});
+
 test("unavailable Pro detail reads only its linked tooltip in any language", async () => {
   const { createWindow } = require("@mixmark-io/domino");
   const details = [
