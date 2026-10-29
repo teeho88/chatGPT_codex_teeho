@@ -1416,8 +1416,9 @@ export async function callTurnBroker<T>(
         return;
       }
       response = parsed;
-      if (settleOnResponseFrame) {
-        // Long-polls finish on the full frame; their peer can otherwise keep both halves open.
+      if (settleOnResponseFrame || parsed.error) {
+        // Long-polls and failed requests can settle on the full response frame. Successful
+        // bounded calls still wait for the peer to close before advancing the lifecycle.
         finishResponse();
         socket.destroy();
       }
