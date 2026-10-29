@@ -148,15 +148,19 @@ export async function closeChatGptBrowserWorkers(): Promise<void> {
   }
 }
 
-export const CHATGPT_RESPONSE_DOM_GRACE_MS = 300_000;
+export const CHATGPT_RESPONSE_DOM_GRACE_MS = 60_000;
 /**
  * How long a staged Bigger Context part may take to produce its assistant turn. A staged part is two
  * orders of magnitude larger than an ordinary prompt and ChatGPT reads all of it before answering.
  * No MCP activity exists while that inert part is being ingested, so the response grace matches
  * the bounded staged-send budget.
  */
-export const CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS = 360_000;
+export const CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS = 180_000;
 export const CHATGPT_EMPTY_RESPONSE_GRACE_MS = 10_000;
+// #885 includes a final arriving 125 seconds after Stop and other progress disappeared.
+// Absence of those controls is an uncertain idle state, not a completed or failed response.
+// Use the same bounded inactivity window as stalled MCP work; explicit errors, empty
+// completed responses and vanished DOM retain their own shorter checks.
 export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 10 * 60_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
@@ -286,22 +290,12 @@ export async function chatGptUnavailableProDetail(menu: Locator): Promise<string
   }
 }
 
-export type ChatGptPersonalizationPreflight = "already-personalized" | "enabled";
+const CHATGPT_CONNECTOR_CLEANUP_TIMEOUT_MS = 5_000;
 
-const CHATGPT_PERSONALIZATION_CONTROL_SELECTOR = [
-  '[data-testid="thread-header-right-actions"] [aria-haspopup="menu"]',
-  '#conversation-header-actions [aria-haspopup="menu"]',
-  '[data-content-sheet-root] > button[aria-expanded][aria-controls]',
-].join(", ");
-const CHATGPT_PERSONALIZATION_CHOICE_SELECTOR = '[role="menuitemradio"], [role="radio"]';
-const CHATGPT_PERSONALIZATION_PREFLIGHT_TIMEOUT_MS = 30_000;
-const CHATGPT_PERSONALIZATION_CONTROL_TIMEOUT_MS = 5_000;
-const CHATGPT_PERSONALIZATION_CLEANUP_TIMEOUT_MS = 5_000;
-
-class ChatGptPersonalizationDeadlineError extends Error {
+class ChatGptConnectorDeadlineError extends Error {
   constructor() {
-    super("ChatGPT personalization preflight exceeded its readiness deadline");
-    this.name = "ChatGptPersonalizationDeadlineError";
+    super("ChatGPT connector cleanup exceeded its readiness deadline");
+    this.name = "ChatGptConnectorDeadlineError";
   }
 }
 
@@ -312,49 +306,14 @@ class ChatGptPersistentBrowserStateError extends AggregateError {
   }
 }
 
-function remainingChatGptPersonalizationMs(deadline: number, signal?: AbortSignal): number {
-  if (signal?.aborted) throw new DOMException("ChatGPT personalization preflight aborted", "AbortError");
+function remainingChatGptConnectorMs(deadline: number, signal?: AbortSignal): number {
+  if (signal?.aborted) throw new DOMException("ChatGPT connector cleanup aborted", "AbortError");
   const remaining = deadline - Date.now();
-  if (remaining <= 0) throw new ChatGptPersonalizationDeadlineError();
+  if (remaining <= 0) throw new ChatGptConnectorDeadlineError();
   return remaining;
 }
 
-async function runChatGptPersonalizationStep<T>(
-  operation: () => Promise<T>,
-  deadline: number,
-  signal?: AbortSignal,
-): Promise<T> {
-  const timeoutMs = remainingChatGptPersonalizationMs(deadline, signal);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await withBrowserTurnAbort(Promise.race([
-      operation(),
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new ChatGptPersonalizationDeadlineError()), timeoutMs);
-      }),
-    ]), signal);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-/**
- * Mutating personalization work owns its AbortSignal and must settle its cleanup before the caller
- * can observe cancellation. Unlike observation races, returning early here could release the page
- * while a rollback or composer clear was still running against the persistent browser profile.
- */
-async function runChatGptPersonalizationOwnedStep<T>(
-  operation: () => Promise<T>,
-  deadline: number,
-  signal: AbortSignal,
-): Promise<T> {
-  remainingChatGptPersonalizationMs(deadline, signal);
-  const result = await operation();
-  remainingChatGptPersonalizationMs(deadline, signal);
-  return result;
-}
-
-async function waitForChatGptPersonalizationPoll(
+async function waitForChatGptConnectorPoll(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -362,7 +321,7 @@ async function waitForChatGptPersonalizationPoll(
     await new Promise(resolve => setTimeout(resolve, timeoutMs));
     return;
   }
-  if (signal.aborted) throw new DOMException("ChatGPT personalization preflight aborted", "AbortError");
+  if (signal.aborted) throw new DOMException("ChatGPT connector cleanup aborted", "AbortError");
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
       signal.removeEventListener("abort", onAbort);
@@ -371,16 +330,16 @@ async function waitForChatGptPersonalizationPoll(
     const onAbort = () => {
       clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
-      reject(new DOMException("ChatGPT personalization preflight aborted", "AbortError"));
+      reject(new DOMException("ChatGPT connector cleanup aborted", "AbortError"));
     };
     signal.addEventListener("abort", onAbort, { once: true });
   });
 }
 
-async function runChatGptPersonalizationCleanup<T>(
+async function runChatGptConnectorCleanup<T>(
   operation: (deadline: number, signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
-  const deadline = Date.now() + CHATGPT_PERSONALIZATION_CLEANUP_TIMEOUT_MS;
+  const deadline = Date.now() + CHATGPT_CONNECTOR_CLEANUP_TIMEOUT_MS;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(1, deadline - Date.now()));
   timer.unref?.();
@@ -391,378 +350,15 @@ async function runChatGptPersonalizationCleanup<T>(
   }
 }
 
-async function pressChatGptPersonalizationEscape(
+async function pressChatGptConnectorEscape(
   page: Page,
   deadline: number,
   signal: AbortSignal,
 ): Promise<void> {
   await page.locator("body").press("Escape", {
-    timeout: remainingChatGptPersonalizationMs(deadline, signal),
+    timeout: remainingChatGptConnectorMs(deadline, signal),
     signal,
   });
-}
-
-async function dismissChatGptPersonalizationMenu(page: Page): Promise<void> {
-  await runChatGptPersonalizationCleanup((deadline, signal) => (
-    pressChatGptPersonalizationEscape(page, deadline, signal)
-  ));
-}
-
-async function waitForChatGptOwnedPersonalizationMenu(
-  page: Page,
-  control: Locator,
-  deadline: number,
-  signal?: AbortSignal,
-): Promise<Locator> {
-  let menuId: string | null = null;
-  while (!menuId) {
-    const remaining = remainingChatGptPersonalizationMs(deadline, signal);
-    menuId = await control.getAttribute("aria-controls", { timeout: remaining, signal });
-    if (!menuId) await waitForChatGptPersonalizationPoll(Math.min(50, remaining), signal);
-  }
-  const menu = page.locator(`[id=${JSON.stringify(menuId)}]`);
-  try {
-    await menu.waitFor({
-      state: "visible",
-      timeout: remainingChatGptPersonalizationMs(deadline, signal),
-      signal,
-    });
-  } catch (error) {
-    if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
-    throw chatGptConnectorUnavailableError(
-      "ChatGPT personalization control did not expose its owned menu before the readiness deadline",
-    );
-  }
-  return menu;
-}
-
-type ChatGptPersonalizationChoiceIndex = 0 | 1;
-
-interface ChatGptPersonalizationState {
-  menu: Locator;
-  choices: Locator;
-  checkedIndex: ChatGptPersonalizationChoiceIndex;
-}
-
-interface ChatGptPersonalizationToggleReceipt {
-  originalIndex: ChatGptPersonalizationChoiceIndex;
-}
-
-async function readChatGptPersonalizationCheckedIndex(
-  choices: Locator,
-  deadline: number,
-  signal: AbortSignal,
-): Promise<ChatGptPersonalizationChoiceIndex> {
-  const checked: boolean[] = [];
-  for (let index = 0; index < 2; index += 1) {
-    const choice = choices.nth(index);
-    const ariaChecked = await choice.getAttribute("aria-checked", {
-      timeout: remainingChatGptPersonalizationMs(deadline, signal),
-      signal,
-    });
-    const dataState = await choice.getAttribute("data-state", {
-      timeout: remainingChatGptPersonalizationMs(deadline, signal),
-      signal,
-    });
-    checked.push(ariaChecked === "true" || dataState === "checked");
-  }
-  if (checked.filter(Boolean).length !== 1) {
-    throw chatGptConnectorUnavailableError(
-      "ChatGPT personalization menu did not expose one checked state",
-    );
-  }
-  return checked[0] ? 0 : 1;
-}
-
-async function openChatGptStructuralPersonalizationState(
-  page: Page,
-  deadline: number,
-  signal: AbortSignal,
-): Promise<ChatGptPersonalizationState> {
-  const controls = page.locator(CHATGPT_PERSONALIZATION_CONTROL_SELECTOR).filter({ visible: true });
-  const control = controls.first();
-  try {
-    await control.waitFor({
-      state: "visible",
-      timeout: Math.min(CHATGPT_PERSONALIZATION_CONTROL_TIMEOUT_MS, remainingChatGptPersonalizationMs(deadline, signal)),
-      signal,
-    });
-  } catch (error) {
-    if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
-    throw chatGptConnectorUnavailableError(
-      "ChatGPT Temporary Chat does not expose a personalization menu and the configured connector is unavailable."
-      + " Reload ChatGPT and retry. If a personalization control is available, choose Personalized before sending a message.",
-    );
-  }
-  const controlCount = await runChatGptPersonalizationStep(() => controls.count(), deadline, signal);
-  if (controlCount !== 1) {
-    throw chatGptConnectorUnavailableError(
-      `ChatGPT Temporary Chat exposed ${controlCount} structural personalization controls; expected exactly one`,
-    );
-  }
-  await control.click({
-    timeout: remainingChatGptPersonalizationMs(deadline, signal),
-    signal,
-  });
-  const menu = await waitForChatGptOwnedPersonalizationMenu(page, control, deadline, signal);
-  const choices = menu.locator(CHATGPT_PERSONALIZATION_CHOICE_SELECTOR).filter({ visible: true });
-  if (await runChatGptPersonalizationStep(() => choices.count(), deadline, signal) !== 2) {
-    throw chatGptConnectorUnavailableError(
-      "ChatGPT personalization menu did not expose exactly two checkable states",
-    );
-  }
-  return {
-    menu,
-    choices,
-    checkedIndex: await readChatGptPersonalizationCheckedIndex(choices, deadline, signal),
-  };
-}
-
-async function restoreChatGptPersonalizationChoice(
-  page: Page,
-  receipt: ChatGptPersonalizationToggleReceipt,
-): Promise<void> {
-  await runChatGptPersonalizationCleanup(async (deadline, signal) => {
-    await pressChatGptPersonalizationEscape(page, deadline, signal);
-    let state = await openChatGptStructuralPersonalizationState(page, deadline, signal);
-    if (state.checkedIndex === receipt.originalIndex) {
-      await pressChatGptPersonalizationEscape(page, deadline, signal);
-      return;
-    }
-    await state.choices.nth(receipt.originalIndex).click({
-      timeout: remainingChatGptPersonalizationMs(deadline, signal),
-      signal,
-    });
-    await state.menu.waitFor({
-      state: "hidden",
-      timeout: remainingChatGptPersonalizationMs(deadline, signal),
-      signal,
-    });
-    await waitForChatGptPersonalizationPoll(CHATGPT_UI_SETTLE_MS, signal);
-
-    state = await openChatGptStructuralPersonalizationState(page, deadline, signal);
-    if (state.checkedIndex !== receipt.originalIndex) {
-      throw new Error("ChatGPT personalization rollback did not restore the original checked state");
-    }
-    await pressChatGptPersonalizationEscape(page, deadline, signal);
-  });
-}
-
-async function toggleChatGptPersonalizationChoice(
-  page: Page,
-  deadline: number,
-  signal: AbortSignal,
-): Promise<ChatGptPersonalizationToggleReceipt> {
-  let receipt: ChatGptPersonalizationToggleReceipt | undefined;
-  try {
-    const state = await openChatGptStructuralPersonalizationState(page, deadline, signal);
-    receipt = { originalIndex: state.checkedIndex };
-    const nextIndex: ChatGptPersonalizationChoiceIndex = state.checkedIndex === 0 ? 1 : 0;
-    await state.choices.nth(nextIndex).click({
-      timeout: remainingChatGptPersonalizationMs(deadline, signal),
-      signal,
-    });
-    await state.menu.waitFor({
-      state: "hidden",
-      timeout: remainingChatGptPersonalizationMs(deadline, signal),
-      signal,
-    });
-    await runChatGptPersonalizationStep(settleChatGptUi, deadline, signal);
-    return receipt;
-  } catch (error) {
-    try {
-      if (receipt) await restoreChatGptPersonalizationChoice(page, receipt);
-      else await dismissChatGptPersonalizationMenu(page);
-    } catch (cleanupError) {
-      throw new ChatGptPersistentBrowserStateError(
-        [error, cleanupError],
-        "ChatGPT personalization change failed and its original state could not be restored",
-      );
-    }
-    throw error;
-  }
-}
-
-async function ensureChatGptPersonalizedConnectorAccessWithinDeadline(
-  page: Page,
-  deadline: number,
-  abortSignal: AbortSignal,
-  captureDiagnostic?: (checkpoint: string) => Promise<void>,
-  proveConfiguredConnectorAccess?: (signal?: AbortSignal) => Promise<boolean>,
-): Promise<ChatGptPersonalizationPreflight> {
-  const capture = async (checkpoint: string): Promise<void> => {
-    if (!captureDiagnostic) return;
-    await runChatGptPersonalizationStep(() => captureDiagnostic(checkpoint), deadline, abortSignal);
-  };
-  const proveConnectorAccess = async (): Promise<boolean> => {
-    if (!proveConfiguredConnectorAccess) return false;
-    return runChatGptPersonalizationOwnedStep(
-      () => proveConfiguredConnectorAccess(abortSignal),
-      deadline,
-      abortSignal,
-    );
-  };
-  // The visible sheet can be aria-hidden during hydration. Include those controls in the role
-  // query but still require visibility; never select a hidden duplicate or switch locator rules.
-  const personalized = page
-    .getByRole("button", { name: /^(?:Personalized|个性化)$/, exact: true, includeHidden: true })
-    .filter({ visible: true });
-  const unpersonalized = page
-    .getByRole("button", { name: /^(?:Unpersonalized|非个性化)$/, exact: true, includeHidden: true })
-    .filter({ visible: true });
-  let personalizedCount = await runChatGptPersonalizationStep(() => personalized.count(), deadline, abortSignal);
-  let unpersonalizedCount = await runChatGptPersonalizationStep(() => unpersonalized.count(), deadline, abortSignal);
-  if (personalizedCount === 0 && unpersonalizedCount === 0) {
-    await runChatGptPersonalizationStep(settleChatGptUi, deadline, abortSignal);
-    personalizedCount = await runChatGptPersonalizationStep(() => personalized.count(), deadline, abortSignal);
-    unpersonalizedCount = await runChatGptPersonalizationStep(() => unpersonalized.count(), deadline, abortSignal);
-    if (personalizedCount === 0 && unpersonalizedCount === 0) {
-      if (!proveConfiguredConnectorAccess) {
-        await capture("personalization-control-missing");
-        throw chatGptConnectorUnavailableError(
-          "ChatGPT Temporary Chat did not expose a verifiable personalization control",
-        );
-      }
-      if (await proveConnectorAccess()) {
-        await capture("personalization-already-enabled");
-        return "already-personalized";
-      }
-      await capture("personalization-unpersonalized");
-      const toggleReceipt = await toggleChatGptPersonalizationChoice(page, deadline, abortSignal);
-      try {
-        if (await proveConnectorAccess()) {
-          await capture("personalization-enabled");
-          return "enabled";
-        }
-      } catch (error) {
-        try {
-          await restoreChatGptPersonalizationChoice(page, toggleReceipt);
-        } catch (restoreError) {
-          throw new ChatGptPersistentBrowserStateError(
-            [error, restoreError],
-            "ChatGPT personalization proof failed and the original state could not be restored",
-          );
-        }
-        throw error;
-      }
-      try {
-        await restoreChatGptPersonalizationChoice(page, toggleReceipt);
-      } catch (restoreError) {
-        throw new ChatGptPersistentBrowserStateError(
-          [restoreError],
-          "ChatGPT personalization changed but connector access was not proven and the original state could not be restored",
-        );
-      }
-      throw chatGptConnectorUnavailableError(
-        "The configured ChatGPT connector remained unavailable after the structural personalization state changed",
-      );
-    }
-  }
-  if (personalizedCount === 1 && unpersonalizedCount === 0) {
-    await capture("personalization-already-enabled");
-    return "already-personalized";
-  }
-  if (personalizedCount !== 0 || unpersonalizedCount !== 1) {
-    throw chatGptConnectorUnavailableError(
-      `ChatGPT exposed an invalid Temporary Chat personalization state`
-      + ` (personalized=${personalizedCount}, unpersonalized=${unpersonalizedCount})`,
-    );
-  }
-
-  await capture("personalization-unpersonalized");
-  await unpersonalized.click({
-    timeout: remainingChatGptPersonalizationMs(deadline, abortSignal),
-    signal: abortSignal,
-  });
-  try {
-    const menu = await waitForChatGptOwnedPersonalizationMenu(
-      page,
-      unpersonalized,
-      deadline,
-      abortSignal,
-    );
-    const choice = menu
-      .locator(CHATGPT_PERSONALIZATION_CHOICE_SELECTOR)
-      .filter({ hasText: /^(?:Personalized|个性化)/ });
-    if (await runChatGptPersonalizationStep(() => choice.count(), deadline, abortSignal) !== 1) {
-      throw chatGptConnectorUnavailableError(
-        "ChatGPT personalization menu did not expose one exact Personalized choice",
-      );
-    }
-    await choice.click({
-      timeout: remainingChatGptPersonalizationMs(deadline, abortSignal),
-      signal: abortSignal,
-    });
-    await personalized.waitFor({
-      state: "visible",
-      timeout: remainingChatGptPersonalizationMs(deadline, abortSignal),
-      signal: abortSignal,
-    });
-    await unpersonalized.waitFor({
-      state: "hidden",
-      timeout: remainingChatGptPersonalizationMs(deadline, abortSignal),
-      signal: abortSignal,
-    });
-  } catch (error) {
-    try {
-      await dismissChatGptPersonalizationMenu(page);
-    } catch (cleanupError) {
-      throw new ChatGptPersistentBrowserStateError(
-        [error, cleanupError],
-        "ChatGPT labeled personalization change failed and its opened menu could not be closed",
-      );
-    }
-    if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
-    throw chatGptConnectorUnavailableError(
-      "ChatGPT did not confirm Personalized connector access for this Temporary Chat",
-    );
-  }
-  await capture("personalization-enabled");
-  return "enabled";
-}
-
-/** New Temporary Chats may suppress connectors until this exact browser conversation is Personalized. */
-export async function ensureChatGptPersonalizedConnectorAccess(
-  page: Page,
-  captureDiagnostic?: (checkpoint: string) => Promise<void>,
-  proveConfiguredConnectorAccess?: (signal?: AbortSignal) => Promise<boolean>,
-  abortSignal?: AbortSignal,
-): Promise<ChatGptPersonalizationPreflight> {
-  const deadline = Date.now() + CHATGPT_PERSONALIZATION_PREFLIGHT_TIMEOUT_MS;
-  const deadlineController = new AbortController();
-  const deadlineTimer = setTimeout(
-    () => deadlineController.abort(new ChatGptPersonalizationDeadlineError()),
-    Math.max(1, deadline - Date.now()),
-  );
-  deadlineTimer.unref?.();
-  const operationSignal = abortSignal
-    ? AbortSignal.any([abortSignal, deadlineController.signal])
-    : deadlineController.signal;
-  try {
-    return await ensureChatGptPersonalizedConnectorAccessWithinDeadline(
-      page,
-      deadline,
-      operationSignal,
-      captureDiagnostic,
-      proveConfiguredConnectorAccess,
-    );
-  } catch (error) {
-    if (error instanceof ChatGptPersistentBrowserStateError) throw error;
-    const guidance = " Finish active tasks, then restart the launcher and Codex to retry connector verification in a regular chat.";
-    if (!abortSignal?.aborted && (
-      error instanceof ChatGptPersonalizationDeadlineError
-      || deadlineController.signal.aborted
-      || Date.now() >= deadline
-    )) {
-      throw chatGptConnectorUnavailableError("ChatGPT did not expose usable personalization controls for this Temporary Chat." + guidance);
-    }
-    if (error instanceof ChatGptWebAdapterError && error.code === "connector_not_found") {
-      throw chatGptConnectorUnavailableError(error.message + guidance);
-    }
-    throw error;
-  } finally {
-    clearTimeout(deadlineTimer);
-  }
 }
 
 export class ChatGptPromptAttachmentIntegrityError extends ChatGptWebAdapterError {
@@ -804,25 +400,6 @@ export async function throwIfChatGptRateLimitDialog(page: Page): Promise<void> {
     "ChatGPT rate limit: too many requests. Try again in a few minutes.",
     { status: 429, errorType: "rate_limit_error", code: "rate_limit_exceeded", retryable: false },
   );
-}
-
-const chatGptTemporaryChatOnboardingDialog = (page: Page): Locator => page
-  .locator('[role="dialog"]')
-  .filter({ hasText: "Not in history" })
-  .filter({ hasText: "No model training" })
-  .filter({ hasText: "Memory off" })
-  .last();
-
-export async function dismissChatGptTemporaryChatOnboarding(page: Page): Promise<boolean> {
-  const dialog = chatGptTemporaryChatOnboardingDialog(page);
-  if (!await dialog.isVisible().catch(() => false)) return false;
-  const continueButton = dialog.getByRole("button", { name: "Continue", exact: true }).last();
-  if (!await continueButton.isVisible().catch(() => false)) {
-    throw new Error("ChatGPT Temporary Chat onboarding is visible without its Continue action");
-  }
-  await continueButton.click({ force: true });
-  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
-  return true;
 }
 
 type ChatGptTextScope = Pick<Locator, "getByText" | "getByTestId">;
@@ -1097,13 +674,16 @@ export async function resolveChatGptToolConfirmation(
   let approvalError: unknown;
   try {
     await onApprovalPending?.(true);
-    const pollIntervalMs = Math.min(100, Math.max(1, timeoutMs));
-    for (;;) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
       if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
       if (!await dialog.isVisible().catch(() => false)) return true;
-      await new Promise(resolveSleep => setTimeout(resolveSleep, pollIntervalMs));
+      await new Promise(resolveSleep => setTimeout(resolveSleep, Math.min(100, Math.max(1, deadline - Date.now()))));
     }
 
+    if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+    if (!await dialog.isVisible().catch(() => false)) return true;
+    throw chatGptToolApprovalRequiredError();
   } catch (error) {
     approvalError = error;
     throw error;
@@ -1291,13 +871,13 @@ export function resolveChatGptWebMultipartStagingMode(
 
 export const browserStageTimeouts = {
   browserPage: 60_000,
-  temporaryChatPreparation: 150_000,
+  newChatPreparation: 150_000,
   effortSelection: 120_000,
   promptAttachment: 60_000,
   fileAttachment: 120_000,
   // Inline prompts can be as large as Bigger Context stages. Both need the same bounded
   // acceptance budget; transport selection must not cut off an already submitted large prompt.
-  send: CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS,
+  send: 180_000,
   // Staging asks for one transaction-bound acknowledgement, not an open-ended model answer.
   multipartStageAcknowledgement: CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS,
 } as const;
@@ -1805,9 +1385,7 @@ export class ChatGptTurnDomHealthTracker {
       || this.missingCompletionAction?.activityText !== state.activityText) {
       this.missingCompletionAction = { text: state.currentText, activityText: state.activityText, since: now };
     } else if (now - this.missingCompletionAction.since >= this.missingCompletionActionMs) {
-      return state.currentText.length > 0
-        ? "ChatGPT stopped generating but did not expose its completed-turn action; the ChatGPT DOM may have changed"
-        : "ChatGPT stopped showing generation or tool activity without a final answer. Check the ChatGPT tab for an error before retrying.";
+      return `ChatGPT has shown no new response activity for ${this.missingCompletionActionMs / 1_000} seconds without a final answer. Check the ChatGPT tab before retrying.`;
     }
     return undefined;
   }
@@ -1830,7 +1408,7 @@ export const MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS = 8;
  * bounds the silence since the last recorded activity rather than the turn's total duration, so a
  * long turn that keeps calling tools is never penalised for taking a long time.
  */
-export const CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS = 10 * 60_000;
+export const CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS = CHATGPT_COMPLETION_ACTION_GRACE_MS;
 
 /** Tolerated clock difference between the recording daemon and the observing helper process. */
 export const CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS = 5_000;
@@ -2931,7 +2509,6 @@ export class ChatGptBrowserWorker {
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
     abortSignal?: AbortSignal,
   ): Promise<Locator> {
-    const useTemporaryChats = this.config.useTemporaryChats;
     throwIfPromptAttachmentAborted(abortSignal);
     // Launcher verification refreshes its owned page before attaching Playwright so a newly added
     // connector is present in the catalog. Navigating again here destroys that freshly hydrated
@@ -2943,15 +2520,12 @@ export class ChatGptBrowserWorker {
         waitUntil: "domcontentloaded",
         timeout: 60_000,
       }), abortSignal);
-      await captureDiagnostic?.(useTemporaryChats ? "temporary-chat-navigation-complete" : "saved-chat-navigation-complete");
+      await captureDiagnostic?.("new-chat-navigation-complete");
     }
     // A failed page read is not evidence of an expired login. Preserve the actual
     // observation error; the authenticated-session check below owns login failures.
     const composer = await this.activeComposer(page, 30_000, abortSignal);
     throwIfPromptAttachmentAborted(abortSignal);
-    if (useTemporaryChats && await dismissChatGptTemporaryChatOnboarding(page)) {
-      await captureDiagnostic?.("temporary-chat-onboarding-dismissed");
-    }
     await captureDiagnostic?.("composer-ready");
     await throwIfChatGptSessionFailureAlert(page);
     await assertAuthenticatedChatGptPage(page);
@@ -3696,8 +3270,8 @@ export class ChatGptBrowserWorker {
   }
 
   private async clearChatGptComposerState(page: Page): Promise<void> {
-    await runChatGptPersonalizationCleanup(async (deadline, signal) => {
-      await pressChatGptPersonalizationEscape(page, deadline, signal);
+    await runChatGptConnectorCleanup(async (deadline, signal) => {
+      await pressChatGptConnectorEscape(page, deadline, signal);
       const timeoutMs = Math.max(1, deadline - Date.now());
       const composer = await this.activeComposer(page, timeoutMs, signal);
       await composer.focus({
@@ -3712,7 +3286,7 @@ export class ChatGptBrowserWorker {
         signal,
         timeout: Math.max(1, Math.min(CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS, deadline - Date.now())),
       });
-      await waitForChatGptPersonalizationPoll(CHATGPT_UI_SETTLE_MS, signal);
+      await waitForChatGptConnectorPoll(CHATGPT_UI_SETTLE_MS, signal);
       const settledComposer = await this.activeComposer(page, Math.max(1, deadline - Date.now()), signal);
       const remainingMs = Math.max(1, deadline - Date.now());
       const remainingText = await settledComposer.evaluate(
@@ -3747,64 +3321,6 @@ export class ChatGptBrowserWorker {
     const appResult = menuRows.filter({
       has: page.getByText(this.config.appName, { exact: true }),
     });
-    if (new URL(page.url()).searchParams.get("temporary-chat") === "true") await ensureChatGptPersonalizedConnectorAccess(
-      page,
-      capture,
-      async (personalizationSignal) => {
-        let proofResult: boolean | undefined;
-        let proofError: unknown;
-        try {
-          composer = await this.activeComposer(page, 30_000, personalizationSignal);
-          await composer.fill("", {
-            signal: personalizationSignal,
-            timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
-          });
-          await composer.focus({
-            signal: personalizationSignal,
-            timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
-          });
-          await withBrowserTurnAbort(settleChatGptUi(), personalizationSignal);
-          await composer.pressSequentially(CHATGPT_CONNECTOR_MENTION_QUERY, {
-            delay: 25,
-            signal: personalizationSignal,
-            timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
-          });
-          await capture("personalization-proof-mention-triggered");
-          try {
-            await appResult.waitFor({ state: "visible", timeout: 2_500, signal: personalizationSignal });
-            proofResult = true;
-            await capture("personalization-proof-menu-visible");
-          } catch (error) {
-            if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
-            proofResult = false;
-            await capture("personalization-proof-menu-missing");
-            const mention = await composer.evaluate(element => ({
-              text: element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement
-                ? element.value : element.textContent ?? "",
-              focused: element === document.activeElement,
-            }), undefined, { timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS, signal: personalizationSignal });
-            if (mention.text !== CHATGPT_CONNECTOR_MENTION_QUERY) {
-              throw new ChatGptPromptAttachmentIntegrityError(
-                `ChatGPT did not preserve the connector mention (expectedChars=${CHATGPT_CONNECTOR_MENTION_QUERY.length}, actualChars=${mention.text.length}, focused=${mention.focused})`,
-              );
-            }
-          }
-        } catch (error) {
-          proofError = error;
-        }
-        try {
-          await this.clearChatGptComposerState(page);
-        } catch (cleanupError) {
-          throw new ChatGptPersistentBrowserStateError(
-            proofError !== undefined ? [proofError, cleanupError] : [cleanupError],
-            "ChatGPT connector proof did not leave a verified empty composer",
-          );
-        }
-        if (proofError !== undefined) throw proofError;
-        return proofResult === true;
-      },
-      abortSignal,
-    );
     try {
       composer = await this.activeComposer(page, 30_000, abortSignal);
       if (await this.connectorIsSelected(composer, abortSignal)) {
@@ -5428,7 +4944,7 @@ export class ChatGptBrowserWorker {
           maxMessageChars,
         );
       }
-      let deadline = this.config.turnTimeoutMs === undefined
+      const deadline = this.config.turnTimeoutMs === undefined
         ? undefined
         : Date.now() + this.config.turnTimeoutMs;
       let page = await this.runStage(turn.traceId, "browser_page", browserStageTimeouts.browserPage, async (abortSignal) => {
@@ -5566,6 +5082,17 @@ export class ChatGptBrowserWorker {
       console.info(
         `[chatgpt-web] browser turn ${turn.traceId} opened (transport=${prepared.multipart ? `multipart-${prepared.multipart.parts.length}` : "inline"}, maxMessageChars=${maxMessageChars}, estimatedInputTokens=${estimatedInputTokens}, images=${prepared.images.length}, compactionTrimmedMessages=${prepared.trimmedCompactionMessages ?? 0})`,
       );
+      if (prepared.contextTokenBreakdown) {
+        // Per-record counts are diagnostic, not additive usage: the full estimate also owns
+        // transport framing, acknowledgements, attachments, and the platform reserve.
+        console.info(`[chatgpt-web] context_token_breakdown ${JSON.stringify({
+          traceId: turn.traceId,
+          scope: "submitted",
+          retainedConversation: reuseConversation,
+          estimatedInputTokens,
+          byRole: prepared.contextTokenBreakdown,
+        })}`);
+      }
       if (multipartStages) {
         console.info(
           `[chatgpt-web] browser turn ${turn.traceId} multipart staging effort=${stagingMode.effort}`
@@ -5575,8 +5102,8 @@ export class ChatGptBrowserWorker {
       if (!reuseConversation) {
         await this.runStage(
           turn.traceId,
-          "temporary_chat_preparation",
-          browserStageTimeouts.temporaryChatPreparation,
+          "new_chat_preparation",
+          browserStageTimeouts.newChatPreparation,
           () => this.prepareChatSurface(
             page,
             checkpoint => diagnostics.capture(page, checkpoint),
@@ -5800,7 +5327,7 @@ export class ChatGptBrowserWorker {
           await this.runStage(
             turn.traceId,
             "connector_catalog_refresh",
-            browserStageTimeouts.temporaryChatPreparation,
+            browserStageTimeouts.newChatPreparation,
             async () => {
               await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
               await this.prepareChatSurface(
@@ -5948,18 +5475,14 @@ export class ChatGptBrowserWorker {
         await generation.checkFailure();
         await throwIfChatGptTerminalErrorAlert(page.locator(chatGptTurnContainerSelector(responseTurn.identity)));
 
-        let confirmationVisibleAt: number | undefined;
         if (mode.localTools && await resolveChatGptToolConfirmation(
           page,
           this.config.appName,
           this.config.autoApproveToolCalls,
           turn.abortSignal,
           CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS,
-          async () => {
-            confirmationVisibleAt = Date.now();
-            await diagnostics.capture(page, "tool-confirmation-visible");
-          },
-          async (pending: boolean) => {
+          () => diagnostics.capture(page, "tool-confirmation-visible"),
+          async pending => {
             if (!launcherSurfaceId) return;
             await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
               phase: "approval",
@@ -5969,9 +5492,6 @@ export class ChatGptBrowserWorker {
             });
           },
         )) {
-          if (deadline !== undefined && confirmationVisibleAt !== undefined) {
-            deadline += Date.now() - confirmationVisibleAt;
-          }
           internalObservationFaults = 0;
           await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
           continue;

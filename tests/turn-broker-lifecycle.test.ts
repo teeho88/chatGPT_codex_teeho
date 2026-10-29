@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from 
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
+import { callTurnBroker, TurnBroker } from "../src/adapters/chatgpt-web/turn-broker";
 import { defaultBrokerEndpoint, isWindowsPipeEndpoint } from "../src/config";
 
 test.skipIf(process.platform === "win32")("closing a rejected broker leaves the live socket reachable", async () => {
@@ -383,38 +383,6 @@ test("bounded broker calls preserve server-owned closure before advancing the li
   }
 });
 
-test("activity cleanup ACK settles on a complete frame without waiting for pipe closure", async () => {
-  let peer!: Socket;
-  let finishFrame!: () => void;
-  const frameStarted = new Promise<void>(resolve => { finishFrame = resolve; });
-  let newline!: () => void;
-  const broker = unansweredBrokerEndpoint("cgw-activity-ack-", socket => {
-    peer = socket;
-    socket.once("data", bytes => {
-      const request = JSON.parse(bytes.toString().trim());
-      const frame = JSON.stringify({ id: request.id, result: { completed: true } }) + "\n";
-      socket.write(frame.slice(0, -1));
-      newline = () => { socket.write("\n"); };
-      finishFrame();
-    });
-  });
-  await broker.listen();
-  try {
-    let settled = false;
-    const call = callTurnBroker(broker.socketPath, {
-      method: "activity_complete", token: "turn_cleanup", activityId: "activity_0123456789abcdef",
-    }, 1_000).then(result => { settled = true; return result; });
-    await frameStarted;
-    await Bun.sleep(20);
-    expect(settled).toBeFalse();
-    newline();
-    await expect(call).resolves.toEqual({ completed: true });
-  } finally {
-    peer?.destroy();
-    await broker.close();
-  }
-});
-
 test("broker frame settlement still rejects errors, wrong identities and incomplete replies", async () => {
   for (const [reply, expected] of [
     [(id: string) => JSON.stringify({ id, error: "claim rejected" }) + "\n", "claim rejected"],
@@ -502,48 +470,3 @@ test("turn broker names the finished turn that owns a replayed handle", async ()
     rmSync(root, { recursive: true, force: true });
   }
 });
-
-test("a detached invocation reattaches by identity without dispatching the native action twice", async () => {
-  const root = mkdtempSync(join(tmpdir(), "cgw-broker-reattach-"));
-  const socketPath = defaultBrokerEndpoint(root);
-  const broker = TurnBroker.forSocket(socketPath);
-  const token = await broker.register({
-    cwd: root,
-    roots: [root],
-    writableRoots: [root],
-    sandboxPolicy: { type: "dangerFullAccess" },
-    tools: [],
-  }, 60_000, "turn-reattach");
-  try {
-    const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
-    const request = {
-      method: "invoke" as const,
-      bindingId: claimed.bindingId,
-      invocationId: "invocation_abcdefghijklmnop",
-      wireName: "exec_command",
-      waitsForUserApproval: true,
-      arguments: { cmd: "approval gated command" },
-    };
-    const detached = new AbortController();
-    const first = callTurnBroker<BrokerToolResult>(socketPath, request, null, detached.signal);
-    const [nativeCall] = await broker.nextToolBatch(token);
-    detached.abort();
-    await expect(first).rejects.toThrow("aborted");
-
-    const reattached = callTurnBroker<BrokerToolResult>(socketPath, request, null);
-    await Bun.sleep(25);
-    const result: BrokerToolResult = {
-      content: [{ type: "text", text: "approved" }],
-      structuredContent: { output: "approved", exit_code: 0 },
-    };
-    broker.completeTool(token, nativeCall!.callId, result);
-    await expect(reattached).resolves.toEqual(result);
-    await expect(callTurnBroker<BrokerToolResult>(socketPath, request)).resolves.toEqual(result);
-    await expect(callTurnBroker(socketPath, { ...request, arguments: { cmd: "different command" } }))
-      .rejects.toThrow("reused with a different native action");
-  } finally {
-    broker.revoke(token);
-    await broker.close();
-    rmSync(root, { recursive: true, force: true });
-  }
-}, 10_000);

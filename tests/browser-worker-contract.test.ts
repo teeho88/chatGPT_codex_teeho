@@ -20,28 +20,6 @@ import { estimateCompiledChatGptWebInputTokens } from "../src/adapters/chatgpt-w
 import { estimateTokens } from "../src/lib/token-estimate";
 import { chatGptHtmlToMarkdown } from "../src/adapters/chatgpt-web/markdown";
 
-test("session inspection returns the new-chat evidence required by the launcher", async () => {
-  let prepared = false;
-  const page = { url: () => "https://chatgpt.com/" };
-  const fixture = {
-    ensurePage: async () => page,
-    prepareChatSurface: async (target: unknown) => {
-      expect(target).toBe(page);
-      prepared = true;
-    },
-  };
-  const inspect = (ChatGptBrowserWorker.prototype as unknown as {
-    inspectSessionExclusive(detectCapabilities: boolean): Promise<unknown>;
-  }).inspectSessionExclusive;
-
-  expect(await inspect.call(fixture, false)).toEqual({
-    authenticated: true,
-    newChat: true,
-    url: "https://chatgpt.com/",
-  });
-  expect(prepared).toBe(true);
-});
-
 test("unavailable Pro detail reads only its linked tooltip in any language", async () => {
   const { createWindow } = require("@mixmark-io/domino");
   const details = [
@@ -337,15 +315,6 @@ test("browser turns have no absolute deadline unless one is explicitly configure
     ...provider,
     chatgptWeb: { turnTimeoutMs: 0 },
   })).toThrow("turnTimeoutMs must be a positive finite number");
-});
-
-test("browser configuration defaults to temporary chats and honors explicit choices", () => {
-  const provider = { adapter: "chatgpt-web" as const, baseUrl: "browser://chatgpt" };
-  expect(resolveBrowserConfig(provider).useTemporaryChats).toBe(true);
-  for (const temporary of [true, false]) {
-    const config = resolveBrowserConfig({ ...provider, chatgptWeb: { useTemporaryChats: temporary } });
-    expect(config.useTemporaryChats).toBe(temporary);
-  }
 });
 
 test("managed Chrome defaults follow the host platform", () => {
@@ -842,7 +811,7 @@ test("two-part saved chats re-prove unchanged effort after the first message cre
   }, capabilities, undefined, { experimentalMultipartParts: 2 }), release() {} };
   const worker: any = ChatGptBrowserWorker.forProvider({
     adapter: "chatgpt-web", baseUrl: `browser://${root}`,
-    chatgptWeb: { browserDiagnosticsPath: root, useTemporaryChats: false },
+    chatgptWeb: { browserDiagnosticsPath: root },
   });
   let url = "https://chatgpt.com/";
   const savedUrl = "https://chatgpt.com/c/00000000-0000-4000-8000-000000000001";
@@ -3213,16 +3182,15 @@ test("manual ChatGPT connector approval pauses and resumes the same browser turn
   expect(fixture.pressed).toEqual([]);
 });
 
-test("an unanswered ChatGPT connector approval remains pending until the turn is aborted", async () => {
+test("an unanswered ChatGPT connector approval explains the permission setting without choosing Deny", async () => {
   const fixture = toolConfirmationPage();
-  const controller = new AbortController();
-  const pending = resolveChatGptToolConfirmation(fixture.page, "Codex Native", false, controller.signal, 2);
-
-  await Promise.resolve();
+  const pending: boolean[] = [];
+  await expect(resolveChatGptToolConfirmation(fixture.page, "Codex Native", false, undefined, 2,
+    undefined, async value => { pending.push(value); })).rejects.toMatchObject({
+      code: "chatgpt_tool_approval_required", retryable: false,
+    });
+  expect(pending).toEqual([true, false]);
   expect(fixture.pressed).toEqual([]);
-  controller.abort();
-  await expect(pending).rejects.toMatchObject({ name: "AbortError" });
-
 });
 
 test("explicit connector auto-approval still selects Allow once", async () => {
@@ -3925,7 +3893,7 @@ test("browser DOM health fails closed on a vanished or empty ChatGPT response", 
   };
   expect(missingCompletionAction.update(completedWithoutMarker, 1_000)).toBeUndefined();
   expect(missingCompletionAction.update(completedWithoutMarker, 1_749)).toBeUndefined();
-  expect(missingCompletionAction.update(completedWithoutMarker, 1_750)).toContain("did not expose its completed-turn action");
+  expect(missingCompletionAction.update(completedWithoutMarker, 1_750)).toContain("without a final answer");
 });
 
 test("visible generation suspends DOM health and restarts its grace when Stop disappears", () => {
@@ -4084,7 +4052,7 @@ test("proven MCP progress vetoes every terminal DOM conclusion, not just a missi
   // Once observable progress stops, the window starts fresh rather than charging the live stretch.
   expect(stalled.update(answeredWithoutCompletionAction, 10_100)).toBeUndefined();
   expect(stalled.update(answeredWithoutCompletionAction, 10_849)).toBeUndefined();
-  expect(stalled.update(answeredWithoutCompletionAction, 10_850)).toContain("did not expose its completed-turn action");
+  expect(stalled.update(answeredWithoutCompletionAction, 10_850)).toContain("without a final answer");
 
   const empty = new ChatGptTurnDomHealthTracker(1_000, 500, 750);
   const completedEmpty = {

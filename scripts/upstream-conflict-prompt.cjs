@@ -22,7 +22,7 @@ function createUpdatePrompts({ input = process.stdin, output = process.stdout } 
       output.write("Invalid choice. Try again.\n");
     }
   };
-  const resolveConflict = async ({ filename, hasLocal, hasUpstream, index, total, filenames = [filename] }) => {
+  const resolveConflict = async ({ filename, hasLocal, hasUpstream, index, total, filenames = [filename], diff }) => {
     open();
     if (!listedConflicts) {
       listedConflicts = true;
@@ -31,6 +31,10 @@ function createUpdatePrompts({ input = process.stdin, output = process.stdout } 
       for (const [position, name] of filenames.entries()) output.write(`  ${position + 1}. ${JSON.stringify(name)}\n`);
     }
     output.write(`\nConflict ${index}/${total}: ${JSON.stringify(filename)}\n`);
+    if (diff) {
+      output.write("Code comparison: - Local / + Upstream (with surrounding context)\n");
+      output.write(`${diff}\n`);
+    }
     output.write(`  [L] Local${hasLocal ? "" : " (file deleted on local side)"}\n`);
     output.write(`  [U] Upstream${hasUpstream ? "" : " (file deleted on upstream side)"}\n`);
     output.write("  [A] Abort update and restore the pre-merge state\n");

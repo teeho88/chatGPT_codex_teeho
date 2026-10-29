@@ -39,6 +39,7 @@ function fixture(t) {
   }
   write(seed, "feature.txt", "initial\n");
   write(seed, "src/adapters/chatgpt-web/index.ts", "UserWaitStore userWaitStatePath\n");
+  write(seed, "src/chatgpt-web-models.ts", "export const CHATGPT_WEB_BACKEND_MODEL = 'web';\n");
   git(seed, "add", ".");
   git(seed, "commit", "-m", "Initial");
   git(seed, "remote", "add", "origin", upstream);
@@ -91,9 +92,11 @@ test("source update fetches, creates backup, resolves README deletion, tests, co
   assert.equal(git(f.checkout, "ls-files", "README*.md"), "");
   assert.equal(git(f.checkout, "ls-files", "CONTRIBUTING.md", "SECURITY.md", "TROUBLESHOOTING.md"), "");
   assert.equal(git(f.checkout, "status", "--porcelain", "--untracked-files=no"), "");
+  assert.match(fs.readFileSync(path.join(f.checkout, "src/chatgpt-web-models.ts"), "utf8"), /CHATGPT_WEB_BACKEND_MODEL/);
   assert.match(git(f.checkout, "branch", "--list", "backup/pre-upstream-*"), /pre-upstream-/);
   assert.deepEqual(f.bunCalls.map(args => args.slice(0, 2)), [
-    ["--version"], ["install", "--frozen-lockfile"], ["run", "typecheck"], ["test", "tests/user-wait-store.test.ts"],
+    ["--version"], ["install", "--frozen-lockfile"], ["run", "typecheck"], ["test", "tests/chatgpt-web-models.test.ts"],
+    ["test", "tests/codex-integration.test.ts"],
   ]);
   assert.equal(await controller.checkOnce().then(state => state.status), "updated");
 });
@@ -253,6 +256,26 @@ test("source updater refuses an upstream merge that removes local protected beha
   assert.equal(git(f.checkout, "status", "--porcelain", "--untracked-files=no"), "");
 });
 
+for (const coreOnly of [false, true]) {
+  test(`source updater preserves ChatGPT Web model routing in ${coreOnly ? "core-only" : "full"} updates`, async t => {
+    const f = fixture(t);
+    f.publishUpstream();
+    const seed = path.join(path.dirname(f.upstream), "seed");
+    write(seed, "src/chatgpt-web-models.ts", "export const OTHER_MODEL = 'replacement';\n");
+    git(seed, "add", "src/chatgpt-web-models.ts");
+    git(seed, "commit", "-m", "Replace web model routing");
+    git(seed, "push", "origin", "main");
+    const originalHead = git(f.checkout, "rev-parse", "HEAD");
+    const originalCatalog = fs.readFileSync(path.join(f.checkout, "src/chatgpt-web-models.ts"), "utf8");
+    const controller = f.controller({ coreOnly });
+    assert.equal((await controller.checkOnce()).status, "available");
+    await assert.rejects(controller.beginInstall(), /removed protected local behavior.*CHATGPT_WEB_BACKEND_MODEL/);
+    assert.equal(git(f.checkout, "rev-parse", "HEAD"), originalHead);
+    assert.equal(fs.readFileSync(path.join(f.checkout, "src/chatgpt-web-models.ts"), "utf8"), originalCatalog);
+    assert.equal(git(f.checkout, "status", "--porcelain", "--untracked-files=no"), "");
+  });
+}
+
 test("source update leaves committed changes in place when origin push fails", async t => {
   const f = fixture(t);
   const upstreamCommit = f.publishUpstream();
@@ -390,6 +413,29 @@ test("source updater refuses a concurrent updater without deleting its lock", as
   assert.equal(git(f.checkout, "branch", "--list", "backup/pre-upstream-*"), "");
 });
 
+test("source updater reclaims a stale lock from a terminated process", async t => {
+  const f = fixture(t);
+  f.publishUpstream();
+  const controller = f.controller();
+  await controller.checkOnce();
+  const filename = path.join(f.checkout, ".git", "teeho-source-update.lock");
+  fs.writeFileSync(filename, JSON.stringify({ pid: 2000000000, startedAt: "2026-10-29T01:32:47.066Z" }));
+  assert.equal((await controller.beginInstall()).status, "updated");
+  assert.equal(fs.existsSync(filename), false);
+});
+
+test("source updater preserves a lock owned by a running process", async t => {
+  const f = fixture(t);
+  f.publishUpstream();
+  const controller = f.controller();
+  await controller.checkOnce();
+  const filename = path.join(f.checkout, ".git", "teeho-source-update.lock");
+  const owner = JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() });
+  fs.writeFileSync(filename, owner);
+  await assert.rejects(controller.beginInstall(), /Another source update is running/);
+  assert.equal(fs.readFileSync(filename, "utf8"), owner);
+});
+
 test("source updater preserves both errors and backup when abort fails", async t => {
   const f = fixture(t);
   write(f.checkout, "feature.txt", "local\n");
@@ -413,4 +459,28 @@ test("source updater preserves both errors and backup when abort fails", async t
   assert.equal(fs.existsSync(path.join(f.checkout, ".git", "MERGE_HEAD")), true);
   assert.equal(fs.existsSync(path.join(f.checkout, ".git", "teeho-source-update.lock")), false);
   assert.equal(controller.getState().status, "available");
+});
+
+
+test("core-only replaces local core at the same version and preserves source launcher", async t => {
+  const f = fixture(t);
+  for (const [filename, content] of Object.entries({
+    "src/adapters/chatgpt-web/index.ts": "local core override\n",
+    "src/local-only.ts": "remove me\n",
+    "scripts/start-app.ps1": "local startup\n",
+    "launcher/electron/source-update.cjs": "local updater\n",
+  })) {
+    fs.mkdirSync(path.dirname(path.join(f.checkout, filename)), { recursive: true });
+    fs.writeFileSync(path.join(f.checkout, filename), content);
+  }
+  git(f.checkout, "add", ".");
+  git(f.checkout, "commit", "-m", "Local overrides");
+  const controller = f.controller({ coreOnly: true });
+  assert.equal((await controller.checkOnce()).status, "available");
+  assert.equal((await controller.beginInstall()).status, "updated");
+  assert.equal(fs.readFileSync(path.join(f.checkout, "src/adapters/chatgpt-web/index.ts"), "utf8").trim(), "UserWaitStore userWaitStatePath");
+  assert.equal(fs.existsSync(path.join(f.checkout, "src/local-only.ts")), false);
+  assert.equal(fs.readFileSync(path.join(f.checkout, "scripts/start-app.ps1"), "utf8").trim(), "local startup");
+  assert.equal(fs.readFileSync(path.join(f.checkout, "launcher/electron/source-update.cjs"), "utf8").trim(), "local updater");
+  assert.equal(f.bunCalls.some(args => args.includes("tests/user-wait-store.test.ts")), false);
 });

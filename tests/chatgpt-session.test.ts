@@ -40,14 +40,6 @@ test.each([false, true])("new chats use the explicit mode and reject other surfa
   }
 });
 
-test.each([false, true])("new-chat URLs and validation honor useTemporaryChats=%s", async useTemporaryChats => {
-  const url = chatGptNewChatUrl(useTemporaryChats);
-  expect(url).toBe(useTemporaryChats ? "https://chatgpt.com/?temporary-chat=true" : CHATGPT_NEW_CHAT_URL);
-  const page = { url: () => url } as any;
-  await expect(assertNewChatPage(page, useTemporaryChats)).resolves.toBeUndefined();
-  await expect(assertNewChatPage(page, !useTemporaryChats)).rejects.toThrow("requested new chat");
-});
-
 test("composer and effort selectors exclude unrelated editable fields and menu buttons", () => {
   const { createDocument } = require("@mixmark-io/domino") as { createDocument(html: string): Document };
   const document = createDocument(`<body><form>

@@ -6,6 +6,14 @@ const path = require("node:path");
 const { EventEmitter } = require("node:events");
 const { runUpstreamBatch } = require("../electron/source-batch-update.cjs");
 
+test("upstream batch keeps interactive merge as its default", () => {
+  const batch = fs.readFileSync(path.join(__dirname, "../../UPDATE-UPSTREAM.bat"), "utf8");
+  assert.match(batch, /update-upstream\.ps1" %\*/);
+  assert.match(batch, /update-upstream\.cjs" --preserve-quota-hooks %\*/);
+  assert.match(batch, /if errorlevel 1 if "%result%"=="0" set "result=1"/);
+  assert.doesNotMatch(batch, /-CoreOnly/i);
+});
+
 test("Windows source installation opens an interactive batch console and waits for its result", async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "source-batch-test-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

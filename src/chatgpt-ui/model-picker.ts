@@ -3,6 +3,7 @@ import type { Locator, Page } from "playwright-core";
 // Control, slider, model rows and announcement formats roll out independently.
 // Keep their evidence here; do not choose an entire page version from one marker.
 export const CHATGPT_EFFORT_CONTROL_SELECTOR = [
+  'button[data-composer-navigation-target="reasoning"][data-selected-reasoning-effort][aria-haspopup="menu"]',
   // 2026-08-28 (7869843): neutral composer button.
   'button[aria-haspopup="menu"][data-tone="neutral"]',
   // Tracked since 2026-08-08 (0dfacc6); original rollout date unknown.

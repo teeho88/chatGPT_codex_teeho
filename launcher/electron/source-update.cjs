@@ -7,7 +7,30 @@ const { assertGitReady, acquireUpdateLock, assertNoLocalObstructions, gitErrorDe
 const execFileAsync = promisify(execFile);
 const UPSTREAM_URL = "https://github.com/miuuyy/codex-chatgpt-web.git";
 const EXCLUDED_DOCS = [":(top,glob)README*.md", ":(top)CONTRIBUTING.md", ":(top)SECURITY.md", ":(top)TROUBLESHOOTING.md"];
+const WEB_ROUTE_FEATURES = Object.freeze({
+  "src/chatgpt-web-models.ts": [
+    "CHATGPT_WEB_BACKEND_MODEL",
+    "CHATGPT_WEB_LUNA_BACKEND_MODEL",
+    "chatgpt-web/gpt-6-sol",
+    "chatgpt-web/gpt-5.6-sol",
+    "chatgpt-web/gpt-5.6-luna",
+    "requireChatGptWebModelRoute(",
+  ],
+  "src/codex-integration.ts": [
+    "installConfiguredRoute(",
+    "installCodexIntegration(",
+    "activateCodexIntegration(",
+    "inspectCodexIntegration(",
+  ],
+  "src/codex-integration-shared.ts": ["export function routeUrl("],
+  "src/codex-integration-route.ts": ["export function installRoute(", "export function verifyInstalledRoute("],
+  "src/config.ts": ["export function providerConfig(", "adapter: \"chatgpt-web\""],
+  "src/chatgpt-ui/model-picker.ts": ["CHATGPT_EFFORT_CONTROL_SELECTOR", "data-composer-navigation-target=\"reasoning\""],
+});
 const PROTECTED_FEATURES = Object.freeze({
+  ...WEB_ROUTE_FEATURES,
+  "UPDATE-UPSTREAM.bat": ["--preserve-quota-hooks"],
+  "scripts/update-upstream.cjs": ["usage_guard.ps1", "--preserve-quota-hooks"],
   "src/adapters/chatgpt-web/index.ts": ["UserWaitStore", "userWaitStatePath"],
   "src/config.ts": ["userWaitStatePath"],
   "src/adapters/chatgpt-web/browser-worker.ts": [
@@ -78,9 +101,9 @@ async function preserveLocalDocumentation(repositoryRoot, git) {
   return restore;
 }
 
-function preserveFeatures(repositoryRoot) {
+function preserveFeatures(repositoryRoot, protectedFeatures = PROTECTED_FEATURES) {
   const features = [];
-  for (const [filename, tokens] of Object.entries(PROTECTED_FEATURES)) {
+  for (const [filename, tokens] of Object.entries(protectedFeatures)) {
     const fullPath = path.join(repositoryRoot, filename);
     if (!fs.existsSync(fullPath)) continue;
     const content = fs.readFileSync(fullPath, "utf8");
@@ -108,6 +131,7 @@ function createSourceUpdateController({
   upstreamUrl = UPSTREAM_URL,
   resolveConflict,
   skipSameVersion = false,
+  coreOnly = false,
   runBatch,
   acquireLock = acquireUpdateLock,
   run = defaultRun,
@@ -175,7 +199,7 @@ function createSourceUpdateController({
     }
     const commits = Number(await git("rev-list", "--count", "HEAD..upstream/main"));
     if (!Number.isSafeInteger(commits)) throw new Error("Could not determine upstream changes");
-    if (commits === 0) return null;
+    if (commits === 0 && (!coreOnly || !(await git("diff", "upstream/main", "--", "src", "tests", "bun.lock", "tsconfig.json", ":(exclude,glob)**/*.md")))) return null;
     const sha = await git("rev-parse", "upstream/main");
     const manifest = JSON.parse(await git("show", "upstream/main:package.json"));
     const localManifest = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "package.json"), "utf8"));
@@ -236,7 +260,7 @@ function createSourceUpdateController({
       await git("var", "GIT_COMMITTER_IDENT");
       restoreDocumentation = await preserveLocalDocumentation(repositoryRoot, git);
       await assertNoLocalObstructions(repositoryRoot, git, latest.sha);
-      const features = preserveFeatures(repositoryRoot);
+      const features = preserveFeatures(repositoryRoot, coreOnly ? WEB_ROUTE_FEATURES : PROTECTED_FEATURES);
       const stamp = now().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
       backup = `backup/pre-upstream-${stamp}`;
       for (let suffix = 1; (await git("branch", "--list", backup)).length; suffix += 1) {
@@ -247,7 +271,7 @@ function createSourceUpdateController({
       merging = true;
       let mergeError;
       try {
-        await git("merge", "--no-commit", "--no-ff", "--no-autostash", "--no-overwrite-ignore", latest.sha);
+        await git("merge", "--no-commit", "--no-ff", "--no-autostash", "--no-overwrite-ignore", ...(coreOnly ? ["-s", "ours"] : []), latest.sha);
       } catch (error) {
         mergeError = error;
       }
@@ -256,7 +280,20 @@ function createSourceUpdateController({
       } catch {
         merging = false;
         if (mergeError) throw new Error(gitErrorDetails(mergeError));
-        throw new Error("Git did not start a merge; retry the upstream check.");
+        if (!coreOnly) throw new Error("Git did not start a merge; retry the upstream check.");
+      }
+      if (coreOnly) {
+        const tracked = await git("ls-files", "-z");
+        const incoming = await git("ls-tree", "-r", "--name-only", "-z", latest.sha);
+        const corePaths = [...new Set([...tracked.split("\0"), ...incoming.split("\0")])]
+          .filter(filename => /^(src\/|tests\/|bun\.lock$|tsconfig\.json$)/.test(filename) && !/\.md$/i.test(filename));
+        if (corePaths.length) await git("restore", `--source=${latest.sha}`, "--staged", "--worktree", "--", ...new Set(corePaths.map(filename => filename.split("/")[0])), ":(exclude,glob)**/*.md");
+        const manifestPath = path.join(repositoryRoot, "package.json");
+        const local = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+        const upstream = JSON.parse(await git("show", `${latest.sha}:package.json`));
+        upstream.scripts = { ...upstream.scripts, ...local.scripts };
+        fs.writeFileSync(manifestPath, `${JSON.stringify(upstream, null, 2)}\n`);
+        await git("add", "--", "package.json");
       }
       await git("rm", "-f", "--ignore-unmatch", "--", ...EXCLUDED_DOCS);
       await resolveMergeConflicts(git, resolveConflict);
@@ -277,11 +314,15 @@ function createSourceUpdateController({
       await run(bun, ["install", "--frozen-lockfile"], repositoryRoot);
       await run(bun, ["run", "typecheck"], repositoryRoot);
       await run(bun, ["test", ...[
-        "tests/user-wait-store.test.ts",
+        ...(!coreOnly && fs.existsSync(path.join(repositoryRoot, "tests/user-wait-store.test.ts"))
+          ? ["tests/user-wait-store.test.ts"] : []),
+        "tests/chatgpt-web-models.test.ts",
+        "tests/runtime-layout.test.ts",
         "tests/zero-risk-mcp-lifecycle.test.ts",
         "tests/browser-worker-contract.test.ts",
         "tests/chatgpt-web-harness.test.ts",
       ]], repositoryRoot);
+      await run(bun, ["test", "tests/codex-integration.test.ts", "-t", "routes Codex without changing native"], repositoryRoot);
       await git("diff", "--cached", "--check");
       await git("diff", "--exit-code");
       await git("commit", "-m", `Merge upstream v${latest.releaseVersion}`);
@@ -301,7 +342,7 @@ function createSourceUpdateController({
       if (error?.stdout || error?.stderr) {
         error = new Error(gitErrorDetails(error), { cause: error });
       }
-      if (merging && !committed) {
+      if ((merging || coreOnly) && !committed && backup) {
         try {
           let mergeStarted = false;
           try {
@@ -309,6 +350,7 @@ function createSourceUpdateController({
             mergeStarted = true;
           } catch {}
           if (mergeStarted) await git("merge", "--abort");
+          else if (coreOnly) await git("reset", "--merge", backup);
         } catch (abortError) {
           error = new AggregateError([error, abortError], `Update failed: ${gitErrorDetails(error)}\nGit could not abort the merge: ${gitErrorDetails(abortError)}\nBackup: ${backup}. Preserve the working tree and resolve or abort the merge manually before retrying.`);
         }

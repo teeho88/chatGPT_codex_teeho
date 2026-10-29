@@ -286,8 +286,6 @@ export interface CodexProviderConfig {
     threadEnvironmentStatePath?: string;
     /** Persisted exact-parent rolling checkpoints used only by Free/Luna turns. */
     lunaCheckpointStatePath?: string;
-    /** Directory for secret-free checkpoints while Zero Risk waits for manual confirmation. */
-    userWaitStatePath?: string;
     /** Optional explicit safety ceiling. Browser turns have no absolute deadline by default. */
     turnTimeoutMs?: number;
     /**
@@ -313,6 +311,7 @@ export interface CodexProviderConfig {
     experimentalSkillAttachments?: boolean;
     /** Explicitly rebuild each automatic turn in a fresh browser conversation. */
     experimentalFreshConversationPerTurn?: boolean;
+    /** Explicit opt-in; ordinary chats remain the default. */
     useTemporaryChats?: boolean;
   };
 }

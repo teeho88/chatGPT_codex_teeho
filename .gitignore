@@ -14,11 +14,9 @@ runtime/
 launcher/build/
 launcher/release/
 launcher/artifacts/
-launcher/electron/teeho-release.json
-/CONTRIBUTING.md
-/SECURITY.md
-/TROUBLESHOOTING.md
 .playwright-cli/
 output/
 notes.md
 /.agents/skills/github-pairing/
+
+[Rr][Ee][Aa][Dd][Mm][Ee]*.md

@@ -348,30 +348,13 @@ export function restoreFileSnapshot(snapshot: FileSnapshot): void {
 }
 
 export function writeFilesWithCompensation(
-  writes: Array<{
-    path: string;
-    data: string | Uint8Array;
-    followSymlink?: boolean;
-    expectedData?: string | Uint8Array | null;
-  }>,
+  writes: Array<{ path: string; data: string | Uint8Array; followSymlink?: boolean }>,
   removals: string[] = [],
 ): void {
   const paths = [...new Set([...writes.map(write => write.path), ...removals])];
   const snapshots = new Map(paths.map(path => [path, snapshotFile(path, {
     followSymlink: writes.some(write => write.path === path && write.followSymlink === true),
   })]));
-  for (const write of writes) {
-    if (write.expectedData === undefined) continue;
-    const snapshot = snapshots.get(write.path)!;
-    const matches = write.expectedData === null
-      ? !snapshot.exists
-      : snapshot.exists
-        && snapshot.data !== undefined
-        && Buffer.from(snapshot.data).equals(Buffer.from(write.expectedData));
-    if (!matches) {
-      throw new Error(`File changed during setup; refusing to overwrite newer data: ${write.path}`);
-    }
-  }
   try {
     for (const write of writes) writeFileSnapshot(snapshots.get(write.path)!, write.data);
     for (const removal of removals) rmSync(removal, { force: true });
@@ -399,7 +382,7 @@ export function serializeJournal(journal: AnyCodexIntegrationJournal): string {
 
 export function writeIntegrationState(
   journal: AnyCodexIntegrationJournal,
-  configWrite?: { path: string; data: string; expectedData?: string | Uint8Array | null },
+  configWrite?: { path: string; data: string },
   removals: string[] = [],
 ): void {
   const data = serializeJournal(journal);

@@ -31,7 +31,31 @@ async function acquireUpdateLock(repositoryRoot, git) {
     descriptor = fs.openSync(filename, "wx");
   } catch (error) {
     if (error.code !== "EEXIST") throw error;
-    throw new Error(`Another source update is running, or an interrupted update left ${filename}. Close other updaters and verify no update is running before removing this lock.`);
+    let previous;
+    try {
+      previous = fs.readFileSync(filename, "utf8");
+    } catch (readError) {
+      if (readError.code !== "ENOENT") throw readError;
+    }
+    let owner = null;
+    try { owner = JSON.parse(previous); } catch { owner = null; }
+    let stale = false;
+    if (Number.isSafeInteger(owner?.pid) && owner.pid > 0) {
+      try { process.kill(owner.pid, 0); }
+      catch (processError) { stale = processError.code === "ESRCH"; }
+    }
+    if (stale) {
+      try {
+        if (fs.readFileSync(filename, "utf8") === previous) fs.unlinkSync(filename);
+      } catch (unlinkError) {
+        if (unlinkError.code !== "ENOENT") throw unlinkError;
+      }
+      try { descriptor = fs.openSync(filename, "wx"); }
+      catch (retryError) { if (retryError.code !== "EEXIST") throw retryError; }
+    }
+    if (descriptor === undefined) {
+      throw new Error(`Another source update is running, or an interrupted update left ${filename}. Close other updaters and verify no update is running before removing this lock.`);
+    }
   }
   try {
     fs.writeFileSync(descriptor, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
@@ -92,9 +116,13 @@ async function resolveMergeConflicts(git, resolveConflict) {
   const decisions = [];
   const filenames = [...conflicts.keys()];
   for (const [filename, stages] of conflicts) {
+    const diff = await git(
+      "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--unified=5",
+      "--src-prefix=local/", "--dst-prefix=upstream/", "HEAD", "MERGE_HEAD", "--", `:(literal)${filename}`,
+    );
     const choice = await resolveConflict({
       filename, hasLocal: stages.has("2"), hasUpstream: stages.has("3"),
-      index: ++index, total: conflicts.size, filenames,
+      index: ++index, total: conflicts.size, filenames, diff,
     });
     if (choice !== "local" && choice !== "upstream") {
       throw new Error("Conflict resolution cancelled; the automatic merge will be aborted and the backup preserved.");

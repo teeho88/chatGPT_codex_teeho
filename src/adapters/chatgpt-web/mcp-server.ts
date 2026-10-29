@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type { ProgressNotification } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod/v4";
 import { namespacedToolName, type CodexTool } from "../../types";
 import { VERSION } from "../../version";
@@ -45,11 +44,9 @@ export const CHATGPT_WEB_AGENT_WAIT_POLL_MS = 30_000;
 export const CHATGPT_WEB_COMMAND_POLL_MAX_MS = 60_000;
 const COMMAND_POLL_TRANSPORT_RULE = `ChatGPT Web transport rule: write_stdin yield_time_ms must be at most ${CHATGPT_WEB_COMMAND_POLL_MAX_MS}. A running command returns partial output and its session_id; return after each poll and use a separate MCP call to poll again if needed. Longer waits are rejected before execution because they can exceed the MCP deadline.`;
 const AGENT_WAIT_TRANSPORT_RULE = `ChatGPT Web transport rule: wait for exactly ${CHATGPT_WEB_AGENT_WAIT_POLL_MS / 1_000} seconds per call, matching the Codex default, then release the MCP channel so spawned Web agents can use their own tools. A wait timeout is not task completion; check agent progress and wait again if needed. Keep the native tool's declared arguments.`;
-const CHATGPT_WEB_MCP_APPROVAL_PROGRESS_MS = 30_000;
-const CHATGPT_WEB_MCP_APPROVAL_RECONNECT_GRACE_MS = 60_000;
-// Ordinary native calls settle before the tunnel's command-response deadline so an abandoned call
-// becomes an MCP error instead of poisoning the long-lived stdio transport. Explicit approval waits
-// are different: user think time must not retire the turn binding, so they use only the turn TTL.
+// The OpenAI tunnel currently owns a two-minute command-response deadline. The local MCP server
+// must settle first so an abandoned native tool call is returned as an MCP error instead of
+// letting the tunnel tear down and poison its long-lived stdio transport.
 export const CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS = 90_000;
 
 const ZERO_RISK_MCP_INSTRUCTIONS = [
@@ -78,81 +75,10 @@ interface McpRequestExtra {
   _meta?: unknown;
   requestInfo?: unknown;
   signal?: AbortSignal;
-  sendNotification?: (notification: ProgressNotification) => Promise<void>;
-}
-
-function approvalProgressIntervalMs(): number {
-  const configured = Number(process.env.CHATGPT_WEB_MCP_APPROVAL_PROGRESS_MS);
-  return Number.isFinite(configured) && configured > 0
-    ? Math.max(1, Math.floor(configured))
-    : CHATGPT_WEB_MCP_APPROVAL_PROGRESS_MS;
-}
-
-function approvalReconnectGraceMs(): number {
-  const configured = Number(process.env.CHATGPT_WEB_MCP_APPROVAL_RECONNECT_GRACE_MS);
-  return Number.isFinite(configured) && configured > 0
-    ? Math.max(1, Math.floor(configured))
-    : CHATGPT_WEB_MCP_APPROVAL_RECONNECT_GRACE_MS;
-}
-
-function startApprovalProgress(extra?: McpRequestExtra): () => void {
-  const meta = extra?._meta && typeof extra._meta === "object" && !Array.isArray(extra._meta)
-    ? extra._meta as Record<string, unknown>
-    : undefined;
-  const progressToken = meta?.progressToken;
-  if ((typeof progressToken !== "string" && typeof progressToken !== "number") || !extra?.sendNotification) {
-    return () => {};
-  }
-  let progress = 0;
-  const emit = () => {
-    progress += 1;
-    void extra.sendNotification!({
-      method: "notifications/progress",
-      params: {
-        progressToken,
-        progress,
-        message: "Waiting for user approval",
-      },
-    }).catch(error => {
-      console.error(`[chatgpt-web-mcp] approval progress notification failed: ${String(error)}`);
-    });
-  };
-  emit();
-  const timer = setInterval(emit, approvalProgressIntervalMs());
-  timer.unref?.();
-  return () => clearInterval(timer);
 }
 
 function scopeHash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
-}
-
-function invocationId(
-  bindingId: string,
-  toolName: string,
-  payload: { arguments?: Record<string, unknown>; input?: string },
-  extra?: McpRequestExtra,
-): string | undefined {
-  if (!extra) return undefined;
-  const meta = extra._meta && typeof extra._meta === "object" && !Array.isArray(extra._meta)
-    ? extra._meta as Record<string, unknown>
-    : undefined;
-  const progressToken = meta?.progressToken;
-  const identity = JSON.stringify({
-    bindingId,
-    toolName,
-    payload,
-    ...(typeof progressToken === "string" || typeof progressToken === "number"
-      ? { progressToken }
-      : { requestId: String(extra.requestId), sessionId: extra.sessionId ?? null }),
-  });
-  return `invocation_${createHash("sha256").update(identity).digest("base64url")}`;
-}
-
-function recoverableApprovalDisconnect(error: unknown): boolean {
-  if (error instanceof DOMException && error.name === "AbortError") return true;
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes("turn broker unavailable") || message.includes("turn broker closed the connection");
 }
 
 function requestScopeSummary(extra: McpRequestExtra): string {
@@ -309,13 +235,7 @@ function assertCommandPollArguments(args: Record<string, unknown>): void {
 export function chatGptMcpInvocationTimeout(
   environment: ChatGptTurnEnvironment & { expiresAt?: number },
   now = Date.now(),
-  waitsForUserApproval = false,
-): number | null {
-  if (waitsForUserApproval) {
-    return environment.expiresAt === undefined
-      ? null
-      : Math.max(1, environment.expiresAt - now);
-  }
+): number {
   const remaining = environment.expiresAt === undefined
     ? CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS
     : Math.max(1, environment.expiresAt - now);
@@ -568,7 +488,6 @@ export async function runChatGptMcpServer(options: {
   contract?: ChatGptMcpContract;
 }): Promise<void> {
   const contract = options.contract ?? "native";
-  const approvalReconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const server = new McpServer(
     { name: contract === "safe" ? "codex-safe" : "codex-native", version: VERSION },
     contract === "safe" ? { instructions: ZERO_RISK_MCP_INSTRUCTIONS } : undefined,
@@ -670,52 +589,20 @@ export async function runChatGptMcpServer(options: {
     bindingId: string,
     bound: ChatGptTurnEnvironment & { expiresAt?: number },
     tool: CodexTool,
-    payload: { arguments?: Record<string, unknown>; input?: string; waitsForUserApproval?: boolean },
+    payload: { arguments?: Record<string, unknown>; input?: string },
     signal?: AbortSignal,
-    requestExtra?: McpRequestExtra,
   ) => {
-    const waitsForUserApproval = payload.waitsForUserApproval === true
-      || payload.arguments?.sandbox_permissions === "require_escalated";
-    const timeoutMs = chatGptMcpInvocationTimeout(bound, Date.now(), waitsForUserApproval);
-    const stopApprovalProgress = waitsForUserApproval ? startApprovalProgress(requestExtra) : undefined;
-    const toolName = wireName(tool);
-    const durableInvocationId = waitsForUserApproval
-      ? invocationId(bindingId, toolName, payload, requestExtra)
-      : undefined;
-    if (durableInvocationId) {
-      const reconnectTimer = approvalReconnectTimers.get(durableInvocationId);
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      approvalReconnectTimers.delete(durableInvocationId);
-    }
+    const timeoutMs = chatGptMcpInvocationTimeout(bound);
     try {
       const response = await callTurnBroker<BrokerToolResult>(options.brokerSocketPath, {
         method: "invoke",
         bindingId,
-        wireName: toolName,
-        ...(durableInvocationId ? { invocationId: durableInvocationId } : {}),
-        waitsForUserApproval,
+        wireName: wireName(tool),
         freeform: tool.freeform === true,
         ...(tool.freeform ? { input: payload.input ?? "" } : { arguments: payload.arguments ?? {} }),
       }, timeoutMs, signal);
       return asMcpResult(response);
     } catch (error) {
-      if (waitsForUserApproval && recoverableApprovalDisconnect(error)) {
-        console.error(`[chatgpt-web-mcp] approval_transport_detached ${JSON.stringify({
-          bindingHash: scopeHash(bindingId),
-          invocationHash: durableInvocationId ? scopeHash(durableInvocationId) : null,
-          requestId: requestExtra ? String(requestExtra.requestId) : null,
-          reason: error instanceof Error ? error.name : "Error",
-        })}`);
-        if (durableInvocationId) {
-          const reconnectTimer = setTimeout(() => {
-            approvalReconnectTimers.delete(durableInvocationId);
-            void callTurnBroker(options.brokerSocketPath, { method: "release", bindingId }).catch(() => {});
-          }, approvalReconnectGraceMs());
-          reconnectTimer.unref?.();
-          approvalReconnectTimers.set(durableInvocationId, reconnectTimer);
-        }
-        throw error;
-      }
       // A cancelled/timed-out MCP request no longer has a consumer for the native result. Revoke
       // the whole turn capability so the broker drops the pending invocation and every later call
       // from that abandoned ChatGPT response fails explicitly against its retired binding.
@@ -724,7 +611,7 @@ export async function runChatGptMcpServer(options: {
         const retired = await callTurnBroker<{ released: boolean; diagnostics?: BrokerRetirementDiagnostics }>(options.brokerSocketPath, {
           method: "release",
           bindingId,
-          ...(error instanceof TurnBrokerTimeoutError && typeof timeoutMs === "number" && timeoutMs > 0 ? {
+          ...(error instanceof TurnBrokerTimeoutError ? {
             failure: { code: "codex_tool_timeout" as const, tool: wireName(tool), timeoutMs },
           } : {}),
         });
@@ -736,6 +623,7 @@ export async function runChatGptMcpServer(options: {
         );
       }
       if (error instanceof TurnBrokerTimeoutError) {
+        const toolName = wireName(tool);
         console.error(
           `[chatgpt-web-mcp] ${toolName} did not complete within ${timeoutMs}ms; retired its turn binding`
           + ` broker_state_at_retirement=${JSON.stringify(diagnostics ?? null)}`,
@@ -750,8 +638,6 @@ export async function runChatGptMcpServer(options: {
         }, true);
       }
       throw error;
-    } finally {
-      stopApprovalProgress?.();
     }
   };
 
@@ -769,7 +655,6 @@ export async function runChatGptMcpServer(options: {
     }
     return invoke(bindingId, bound, gateway, {
       input: execGatewayProgram(nestedToolName, freeform, payload, bound.tools.map(wireName)),
-      waitsForUserApproval: payload.arguments?.sandbox_permissions === "require_escalated",
     }, signal);
   };
 
@@ -830,7 +715,7 @@ export async function runChatGptMcpServer(options: {
             }
           }
           const args = tool.name === "exec_command" ? execCommandArguments : shellCommandArguments;
-          return invoke(claimed.bindingId, bound, tool, { arguments: args }, extra.signal, extra);
+          return invoke(claimed.bindingId, bound, tool, { arguments: args }, extra.signal);
         }
         const gateway = execGateway(bound);
         if (!gateway) {
@@ -838,8 +723,7 @@ export async function runChatGptMcpServer(options: {
         }
         return invoke(claimed.bindingId, bound, gateway, {
           input: execCommandGatewayProgram(execCommandArguments, shellCommandArguments),
-          waitsForUserApproval: sandbox_permissions === "require_escalated",
-        }, extra.signal, extra);
+        }, extra.signal);
       },
     ),
   );
@@ -1098,8 +982,7 @@ export async function runChatGptMcpServer(options: {
             input: execGatewayProgram(wire_name, input !== undefined, {
               ...(input !== undefined ? { input } : { arguments: invocationArguments }),
             }, bound.tools.map(wireName)),
-            waitsForUserApproval: invocationArguments.sandbox_permissions === "require_escalated",
-          }, extra.signal, extra);
+          }, extra.signal);
         }
         if (tool.freeform) {
           if (input === undefined) throw new Error(`Freeform Codex tool ${wire_name} requires input`);
@@ -1111,7 +994,7 @@ export async function runChatGptMcpServer(options: {
         if (input !== undefined) throw new Error(`Function Codex tool ${wire_name} does not accept freeform input`);
         const invocationArguments = args ?? {};
         assertBrowserToolArguments(tool, invocationArguments);
-        return invoke(claimed.bindingId, bound, tool, { arguments: invocationArguments }, extra.signal, extra);
+        return invoke(claimed.bindingId, bound, tool, { arguments: invocationArguments }, extra.signal);
       });
     },
   );

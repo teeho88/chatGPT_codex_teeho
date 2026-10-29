@@ -18,6 +18,8 @@ echo.
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\update-upstream.ps1" %*
 set "result=%errorlevel%"
+node "%~dp0scripts\update-upstream.cjs" --preserve-quota-hooks %*
+if errorlevel 1 if "%result%"=="0" set "result=1"
 echo.
 if not "%result%"=="0" (
     echo [FAILED] Update or push failed. Exit code: %result%

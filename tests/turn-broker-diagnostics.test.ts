@@ -16,7 +16,7 @@ async function fixture(ttlMs?: number) {
   let queued!: () => void;
   const info = spyOn(console, "info").mockImplementation(message => {
     logs.push(String(message));
-    if (String(message).includes(" broker invocation_queued ")) queued?.();
+    if (String(message).includes(" queued call=")) queued?.();
   });
   const environment = { cwd: root, roots: [root], writableRoots: [root], sandboxPolicy: { type: "dangerFullAccess" as const }, tools: [] };
   const token = await broker.register(environment, ttlMs, "diagnostic-turn");

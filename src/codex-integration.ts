@@ -306,11 +306,7 @@ export function installCodexIntegration(
       updated.active = false;
       if (existing.reconnectOnStartup) updated.reconnectOnStartup = true;
     }
-    writeIntegrationState(updated, {
-      path: configPath,
-      data: installedText,
-      expectedData: configExists ? currentText : null,
-    }, [getCodexModelsCachePath()]);
+    writeIntegrationState(updated, { path: configPath, data: installedText }, [getCodexModelsCachePath()]);
     return updated;
   }
 
@@ -350,11 +346,7 @@ export function installCodexIntegration(
     } : {}),
     format: textFormat(baseline),
   };
-  writeIntegrationState(journal, {
-    path: configPath,
-    data: patched.text,
-    expectedData: configExists ? currentText : null,
-  }, [getCodexModelsCachePath()]);
+  writeIntegrationState(journal, { path: configPath, data: patched.text }, [getCodexModelsCachePath()]);
   if (existing?.version === 2 && existsSync(existing.catalogPath)) rmSync(existing.catalogPath);
   return journal;
 }
@@ -391,11 +383,7 @@ export function deactivateCodexIntegration(options: { forRuntimeRecovery?: boole
       : { ...existing, version: 4, active: false };
   if (options.forRuntimeRecovery) disconnected.reconnectOnStartup = true;
   else delete disconnected.reconnectOnStartup;
-  writeIntegrationState(disconnected, {
-    path: existing.configPath,
-    data: restored,
-    expectedData: current,
-  }, [getCodexModelsCachePath()]);
+  writeIntegrationState(disconnected, { path: existing.configPath, data: restored }, [getCodexModelsCachePath()]);
   return { changed: true, active: false };
 }
 
@@ -463,11 +451,7 @@ export function activateCodexIntegration(options: { recoveryOnly?: boolean } = {
     } : {}),
     ...(existing.format ? { format: existing.format } : {}),
   };
-  writeIntegrationState(connected, {
-    path: existing.configPath,
-    data: route.text,
-    expectedData: current,
-  }, [getCodexModelsCachePath()]);
+  writeIntegrationState(connected, { path: existing.configPath, data: route.text }, [getCodexModelsCachePath()]);
   return { changed: true, active: true };
 }
 

@@ -162,9 +162,6 @@ async function run(message: RunMessage): Promise<void> {
     throw new Error("Browser helper turn identity is invalid");
   }
   if (abortControllers.has(message.id)) throw new Error(`Browser helper turn already exists: ${message.id}`);
-  if (message.config.useTemporaryChats !== undefined && typeof message.config.useTemporaryChats !== "boolean") {
-    throw new Error("Browser helper temporary chat flag is invalid");
-  }
   if (message.turn.resumeAvailable !== undefined && typeof message.turn.resumeAvailable !== "boolean") {
     throw new Error("Browser helper resume availability is invalid");
   }

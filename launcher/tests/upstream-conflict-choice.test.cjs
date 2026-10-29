@@ -61,6 +61,15 @@ for (const side of ["local", "upstream"]) {
     assert.equal(fs.readFileSync(path.join(root, "literal.txt"), "utf8").trim(), "untouched");
     assert.equal(prompts.find(item => item.filename === "delete-local.txt").hasLocal, false);
     assert.equal(prompts.find(item => item.filename === "delete-upstream.txt").hasUpstream, false);
+    const textDiff = prompts.find(item => item.filename === "text.txt").diff;
+    assert.match(textDiff, /--- local\/text\.txt/);
+    assert.match(textDiff, /\+\+\+ upstream\/text\.txt/);
+    assert.match(textDiff, /\n-local\r?\n/);
+    assert.match(textDiff, /\n\+upstream(?:\r?\n|$)/);
+    assert.match(prompts.find(item => item.filename === "binary.dat").diff, /Binary files .* differ/);
+    assert.match(prompts.find(item => item.filename === "delete-local.txt").diff, /new file mode/);
+    assert.match(prompts.find(item => item.filename === "delete-upstream.txt").diff, /deleted file mode/);
+    assert.match(prompts.find(item => item.filename === "[literal].txt").diff, /\n-local\r?\n/);
     assert.equal(prompts.at(-1).index, prompts.length);
     assert.ok(prompts.every(item => item.total === prompts.length));
   });
@@ -95,6 +104,23 @@ test("conflict prompt accepts per-file choices and retries invalid input", async
     assert.match(transcript, /Invalid choice/);
     assert.match(transcript, /file deleted on upstream side/);
     assert.match(transcript, /file deleted on local side/);
+  } finally { resolve.close(); }
+});
+
+test("conflict prompt shows code differences before offering the file choices", async t => {
+  const { git } = fixture(t);
+  const output = new PassThrough();
+  let transcript = "";
+  output.on("data", chunk => { transcript += chunk; });
+  const resolve = createConflictResolver({ input: Readable.from(["a\n"]), output });
+  try {
+    await assert.rejects(resolveMergeConflicts(git, resolve), /cancelled/);
+    assert.match(transcript, /Code comparison: - Local \/ \+ Upstream/);
+    assert.match(transcript, /\n-local\r?\n/);
+    assert.match(transcript, /\n\+upstream\r?\n/);
+    assert.ok(transcript.indexOf("Code comparison:") < transcript.indexOf("  [L] Local"));
+    assert.ok(transcript.indexOf("+upstream") < transcript.indexOf("Choose L / U / A"));
+    assert.notEqual(git("ls-files", "--unmerged"), "");
   } finally { resolve.close(); }
 });
 

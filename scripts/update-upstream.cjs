@@ -1,4 +1,5 @@
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
@@ -7,6 +8,55 @@ const { assertGitReady, acquireUpdateLock, gitErrorDetails } = require("../launc
 const { createUpdatePrompts } = require("./upstream-conflict-prompt.cjs");
 
 const defaultRepositoryRoot = path.resolve(__dirname, "..");
+const USAGE_GUARD = /(?:^|[\\/\s"'])usage_guard\.ps1(?=$|[\s"'])/i;
+
+function removeUsageGuardHooks(config) {
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error("Codex hooks.json must contain a JSON object");
+  }
+  if (config.hooks === undefined) return 0;
+  if (!config.hooks || typeof config.hooks !== "object" || Array.isArray(config.hooks)) {
+    throw new Error("Codex hooks.json has an invalid hooks section");
+  }
+
+  let removed = 0;
+  for (const [event, matchers] of Object.entries(config.hooks)) {
+    if (!Array.isArray(matchers)) continue;
+    config.hooks[event] = matchers.flatMap(matcher => {
+      if (!matcher || !Array.isArray(matcher.hooks)) return [matcher];
+      const retained = matcher.hooks.filter(hook => {
+        const guarded = typeof hook?.command === "string" && USAGE_GUARD.test(hook.command);
+        if (guarded) removed += 1;
+        return !guarded;
+      });
+      return retained.length ? [{ ...matcher, hooks: retained }] : [];
+    });
+    if (config.hooks[event].length === 0 && matchers.length !== 0) delete config.hooks[event];
+  }
+  return removed;
+}
+
+function preserveQuotaHooks(codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex")) {
+  const hooksFile = path.join(codexHome, "hooks.json");
+  if (!fs.existsSync(hooksFile)) return { removed: 0, hooksFile };
+
+  const original = fs.readFileSync(hooksFile, "utf8");
+  const hasBom = original.startsWith("\uFEFF");
+  const data = JSON.parse(hasBom ? original.slice(1) : original);
+  const removed = removeUsageGuardHooks(data);
+  if (removed > 0) {
+    const newline = original.includes("\r\n") ? "\r\n" : "\n";
+    const updated = `${hasBom ? "\uFEFF" : ""}${JSON.stringify(data, null, 2).replace(/\n/g, newline)}${newline}`;
+    const temporary = `${hooksFile}.${process.pid}.tmp`;
+    try {
+      fs.writeFileSync(temporary, updated, { mode: fs.statSync(hooksFile).mode });
+      fs.renameSync(temporary, hooksFile);
+    } finally {
+      if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+    }
+  }
+  return { removed, hooksFile };
+}
 
 function git(repositoryRoot, ...args) {
   return execFileSync("git", args, {
@@ -58,6 +108,7 @@ async function runUpdate({
   repositoryRoot = defaultRepositoryRoot,
   upstreamUrl,
   checkOnly = false,
+  coreOnly = false,
   resolveConflict,
   resolveWorkingTree,
   logger = console,
@@ -96,7 +147,8 @@ async function runUpdate({
     const controller = createSourceUpdateController({
       repositoryRoot,
       resolveConflict,
-      skipSameVersion: true,
+      skipSameVersion: !coreOnly,
+      coreOnly,
       acquireLock: async () => () => {},
       ...(upstreamUrl ? { upstreamUrl } : {}),
       logger: {
@@ -149,16 +201,30 @@ async function runUpdate({
 
 if (require.main === module) {
   const args = process.argv.slice(2);
-  if (args.length > 1 || (args.length === 1 && args[0] !== "--check")) {
-    console.error("Usage: node scripts/update-upstream.cjs [--check]");
+  if (args.includes("--preserve-quota-hooks")) {
+    if (args.some(arg => arg.toLowerCase() === "-check" || arg === "--check")) {
+      console.log("[QUOTA HOOKS] Check-only mode: Codex hooks left unchanged.");
+    } else {
+      try {
+        const { removed } = preserveQuotaHooks();
+        console.log(removed
+          ? `[QUOTA HOOKS] Removed ${removed} local usage_guard.ps1 hook(s); other hooks preserved.`
+          : "[QUOTA HOOKS] Local usage quota guard remains disabled.");
+      } catch (error) {
+        console.error(`[QUOTA HOOKS] Failed to preserve local configuration: ${error.message}`);
+        process.exitCode = 1;
+      }
+    }
+  } else if (args.some(arg => !["--check", "--core-only"].includes(arg))) {
+    console.error("Usage: node scripts/update-upstream.cjs [--check] [--core-only]");
     process.exitCode = 2;
   } else {
     const prompts = createUpdatePrompts();
-    runUpdate({ checkOnly: args.includes("--check"), resolveConflict: prompts.resolveConflict, resolveWorkingTree: prompts.resolveWorkingTree }).catch(error => {
+    runUpdate({ coreOnly: args.includes("--core-only"), checkOnly: args.includes("--check"), resolveConflict: prompts.resolveConflict, resolveWorkingTree: prompts.resolveWorkingTree }).catch(error => {
       console.error(`Upstream update failed: ${error.message}`);
       process.exitCode = 1;
     }).finally(() => prompts.close());
   }
 }
 
-module.exports = { runUpdate };
+module.exports = { runUpdate, preserveQuotaHooks };
