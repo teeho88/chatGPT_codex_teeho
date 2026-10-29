@@ -126,6 +126,7 @@ export interface AppConfig {
   /** Optional adapter-silence budget for the Responses watchdog. */
   stallTimeoutSec?: number;
   autoApproveToolCalls: boolean;
+  useTemporaryChats: boolean;
   controlToken: string;
   runtimeCommand: string[];
   acknowledgedUnofficialAt?: string;
@@ -256,6 +257,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     experimentalFreshConversationPerTurn: false,
     zeroRiskProEnabled: false,
     autoApproveToolCalls: false,
+    useTemporaryChats: true,
     controlToken: randomBytes(32).toString("base64url"),
     runtimeCommand: currentRuntimeCommand(),
   };
@@ -411,6 +413,9 @@ function parseConfig(value: unknown, path: string): AppConfig {
   const parsed = { ...value } as Partial<AppConfig> & { useSavedChats?: unknown };
   // Retire the old chat-mode preference without invalidating existing installations.
   delete parsed.useSavedChats;
+  if (parsed.useTemporaryChats !== undefined && typeof parsed.useTemporaryChats !== "boolean") {
+    throw new Error(`Invalid useTemporaryChats in ${path}`);
+  }
   if (parsed.version !== 3) throw new Error(`Unsupported configuration version in ${path}; rerun setup to migrate it`);
   if (parsed.purpose !== undefined && parsed.purpose !== "dev-harness") {
     throw new Error(`Invalid configuration purpose in ${path}`);
@@ -575,6 +580,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
   }
   return {
     ...parsed,
+    useTemporaryChats: parsed.useTemporaryChats !== false,
     appName: expectedAppName,
     automaticAppName,
     manualAppName,
@@ -646,6 +652,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       experimentalFreshConversationPerTurn: !manual && config.experimentalFreshConversationPerTurn === true,
       ...(config.stallTimeoutSec !== undefined ? { stallTimeoutSec: config.stallTimeoutSec } : {}),
       autoApproveToolCalls: manual ? false : config.autoApproveToolCalls,
+      useTemporaryChats: config.useTemporaryChats,
     },
   };
 }

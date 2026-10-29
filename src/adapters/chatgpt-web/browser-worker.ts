@@ -1532,7 +1532,7 @@ export interface ResolvedBrowserConfig {
   turnTimeoutMs?: number;
   headed: boolean;
   autoApproveToolCalls: boolean;
-  useSavedChats?: boolean;
+  useTemporaryChats?: boolean;
 }
 
 export function chatGptTurnIsComplete(state: {
@@ -2315,7 +2315,7 @@ export function resolveBrowserConfig(provider: CodexProviderConfig): ResolvedBro
     ...(turnTimeoutMs !== undefined ? { turnTimeoutMs } : {}),
     headed: configured.headed !== false,
     autoApproveToolCalls: configured.autoApproveToolCalls === true,
-    ...(configured.useSavedChats !== undefined ? { useSavedChats: configured.useSavedChats } : {}),
+    useTemporaryChats: configured.useTemporaryChats !== false,
   };
 }
 
@@ -2915,39 +2915,37 @@ export class ChatGptBrowserWorker {
     );
   }
 
-  /** Prepare a new conversation; account inspection still uses an empty Temporary Chat. */
+  /** Prepare and verify the selected new-chat surface. */
   private async prepareChatSurface(
     page: Page,
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
-    useSavedChatsOrSignal: boolean | AbortSignal = true,
     abortSignal?: AbortSignal,
   ): Promise<Locator> {
-    const useSavedChats = typeof useSavedChatsOrSignal === "boolean" ? useSavedChatsOrSignal : true;
-    if (typeof useSavedChatsOrSignal !== "boolean") abortSignal = useSavedChatsOrSignal;
+    const useTemporaryChats = this.config.useTemporaryChats;
     throwIfPromptAttachmentAborted(abortSignal);
     // Launcher verification refreshes its owned page before attaching Playwright so a newly added
     // connector is present in the catalog. Navigating again here destroys that freshly hydrated
     // document and made the first verification race a second SPA bootstrap. A leased turn starts on
     // about:blank and therefore still performs exactly one navigation through this same method.
-    const targetUrl = chatGptNewChatUrl(useSavedChats);
+    const targetUrl = chatGptNewChatUrl(useTemporaryChats);
     if (page.url() !== targetUrl) {
       await withBrowserTurnAbort(page.goto(targetUrl, {
         waitUntil: "domcontentloaded",
         timeout: 60_000,
       }), abortSignal);
-      await captureDiagnostic?.(useSavedChats ? "saved-chat-navigation-complete" : "temporary-chat-navigation-complete");
+      await captureDiagnostic?.(useTemporaryChats ? "temporary-chat-navigation-complete" : "saved-chat-navigation-complete");
     }
     // A failed page read is not evidence of an expired login. Preserve the actual
     // observation error; the authenticated-session check below owns login failures.
     const composer = await this.activeComposer(page, 30_000, abortSignal);
     throwIfPromptAttachmentAborted(abortSignal);
-    if (!useSavedChats && await dismissChatGptTemporaryChatOnboarding(page)) {
+    if (useTemporaryChats && await dismissChatGptTemporaryChatOnboarding(page)) {
       await captureDiagnostic?.("temporary-chat-onboarding-dismissed");
     }
     await captureDiagnostic?.("composer-ready");
     await throwIfChatGptSessionFailureAlert(page);
     await assertAuthenticatedChatGptPage(page);
-    await assertNewChatPage(page, useSavedChats);
+    await assertNewChatPage(page, useTemporaryChats);
     await captureDiagnostic?.("session-verified");
     return composer;
   }
@@ -4320,7 +4318,7 @@ export class ChatGptBrowserWorker {
     let completed = false;
     try {
       await captureDiagnostic("connector-verification-started");
-      await this.prepareChatSurface(page, captureDiagnostic, this.config.useSavedChats);
+      await this.prepareChatSurface(page, captureDiagnostic);
       // The launcher refreshes its owned ChatGPT document before starting this helper. A second
       // reload here can discard the first catalog's exact mismatch evidence and report a generic
       // menu failure instead of identifying the connector the account actually exposes.
@@ -4359,7 +4357,7 @@ export class ChatGptBrowserWorker {
 
   private async smokeTestExclusive(abortSignal?: AbortSignal): Promise<{ effort: string; response: string }> {
     const page = await this.ensurePage();
-    await this.prepareChatSurface(page, undefined, false, abortSignal);
+    await this.prepareChatSurface(page, undefined, abortSignal);
     const control = await waitForChatGptEffortControl(page, { signal: abortSignal });
     let account = { solAvailable: false, extraHighAvailable: false, proAvailable: false };
     if (control) {
@@ -5539,7 +5537,6 @@ export class ChatGptBrowserWorker {
           () => this.prepareChatSurface(
             page,
             checkpoint => diagnostics.capture(page, checkpoint),
-            this.config.useSavedChats,
             turn.abortSignal,
           ),
         );
@@ -5765,7 +5762,6 @@ export class ChatGptBrowserWorker {
               await this.prepareChatSurface(
                 page,
                 checkpoint => diagnostics.capture(page, checkpoint),
-                this.config.useSavedChats,
                 turn.abortSignal,
               );
               mode = await this.selectModelAndEffort(

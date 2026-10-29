@@ -338,6 +338,15 @@ test("browser turns have no absolute deadline unless one is explicitly configure
   })).toThrow("turnTimeoutMs must be a positive finite number");
 });
 
+test("browser configuration defaults to temporary chats and honors explicit choices", () => {
+  const provider = { adapter: "chatgpt-web" as const, baseUrl: "browser://chatgpt" };
+  expect(resolveBrowserConfig(provider).useTemporaryChats).toBe(true);
+  for (const temporary of [true, false]) {
+    const config = resolveBrowserConfig({ ...provider, chatgptWeb: { useTemporaryChats: temporary } });
+    expect(config.useTemporaryChats).toBe(temporary);
+  }
+});
+
 test("managed Chrome defaults follow the host platform", () => {
   expect(defaultChromeExecutable("darwin")).toBe("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
   expect(defaultChromeExecutable("linux")).toBe("/usr/bin/google-chrome");
@@ -546,12 +555,13 @@ test("chat preparation preserves page-read and composer errors instead of report
   }).prepareChatSurface;
   for (const error of [new ChatGptBrowserObservationTimeoutError(5_000), new Error("ChatGPT composer is unavailable")]) {
     const page = { url: () => "https://chatgpt.com/" };
-    await expect(prepare.call({ activeComposer: async () => { throw error; } }, page)).rejects.toBe(error);
+    await expect(prepare.call({ config: { useTemporaryChats: false }, activeComposer: async () => { throw error; } }, page)).rejects.toBe(error);
   }
 });
 
 test("cancelled chat preparation stops navigation and composer polling", async () => {
   const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+  worker.config = { useTemporaryChats: false };
   for (const stage of ["before-navigation", "navigation", "composer"]) {
     const controller = new AbortController();
     let navigations = 0;
@@ -818,7 +828,7 @@ test("two-part saved chats re-prove unchanged effort after the first message cre
   }, capabilities, undefined, { experimentalMultipartParts: 2 }), release() {} };
   const worker: any = ChatGptBrowserWorker.forProvider({
     adapter: "chatgpt-web", baseUrl: `browser://${root}`,
-    chatgptWeb: { browserDiagnosticsPath: root },
+    chatgptWeb: { browserDiagnosticsPath: root, useTemporaryChats: false },
   });
   let url = "https://chatgpt.com/";
   const savedUrl = "https://chatgpt.com/c/00000000-0000-4000-8000-000000000001";
@@ -834,7 +844,7 @@ test("two-part saved chats re-prove unchanged effort after the first message cre
   let sends = 0;
   const finished = new Error("final send reached with a current effort proof");
   Object.assign(worker, {
-    prepareChatSurface: async (_page: unknown, _capture: unknown, _useSavedChats: boolean, signal?: AbortSignal) => { expect(signal).toBeInstanceOf(AbortSignal); },
+    prepareChatSurface: async (_page: unknown, _capture: unknown, signal?: AbortSignal) => { expect(signal).toBeInstanceOf(AbortSignal); },
     activeComposer: async () => composer,
     selectModelAndEffort: async () => {
       selections.push(url);

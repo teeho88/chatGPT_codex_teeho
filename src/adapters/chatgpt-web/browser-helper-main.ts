@@ -20,6 +20,7 @@ interface RunMessage {
     browserDiagnosticsPath?: string;
     turnTimeoutMs: number;
     autoApproveToolCalls: boolean;
+    useTemporaryChats?: boolean;
   };
   turn: {
     traceId: string;
@@ -44,6 +45,7 @@ interface VerifyMessage {
   config: {
     appName: string;
     browserHostDescriptorPath: string;
+    useTemporaryChats?: boolean;
   };
 }
 
@@ -160,6 +162,9 @@ async function run(message: RunMessage): Promise<void> {
     throw new Error("Browser helper turn identity is invalid");
   }
   if (abortControllers.has(message.id)) throw new Error(`Browser helper turn already exists: ${message.id}`);
+  if (message.config.useTemporaryChats !== undefined && typeof message.config.useTemporaryChats !== "boolean") {
+    throw new Error("Browser helper temporary chat flag is invalid");
+  }
   if (message.turn.resumeAvailable !== undefined && typeof message.turn.resumeAvailable !== "boolean") {
     throw new Error("Browser helper resume availability is invalid");
   }
@@ -195,6 +200,7 @@ async function run(message: RunMessage): Promise<void> {
       browserDiagnosticsPath: message.config.browserDiagnosticsPath,
       turnTimeoutMs: message.config.turnTimeoutMs,
       autoApproveToolCalls: message.config.autoApproveToolCalls,
+      useTemporaryChats: message.config.useTemporaryChats !== false,
     },
   };
   const abortController = new AbortController();
@@ -360,13 +366,14 @@ function maintenanceWorker(message: MaintenanceMessage): ChatGptBrowserWorker {
   }
   const appName = message.config.appName?.trim();
   const browserHostDescriptorPath = message.config.browserHostDescriptorPath?.trim();
-  if (!appName || appName.length > 80 || !browserHostDescriptorPath) {
+  if (!appName || appName.length > 80 || !browserHostDescriptorPath
+    || (message.config.useTemporaryChats !== undefined && typeof message.config.useTemporaryChats !== "boolean")) {
     throw new Error("Browser helper maintenance config is invalid");
   }
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: "https://chatgpt.com",
-    chatgptWeb: { appName, browserHost: "launcher", browserHostDescriptorPath },
+    chatgptWeb: { appName, browserHost: "launcher", browserHostDescriptorPath, useTemporaryChats: message.config.useTemporaryChats !== false },
   };
   return ChatGptBrowserWorker.forProvider(provider);
 }

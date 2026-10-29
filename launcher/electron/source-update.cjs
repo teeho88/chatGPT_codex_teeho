@@ -298,6 +298,9 @@ function createSourceUpdateController({
       candidate = null;
       return transition({ status: "updated", version: latest.version });
     } catch (error) {
+      if (error?.stdout || error?.stderr) {
+        error = new Error(gitErrorDetails(error), { cause: error });
+      }
       if (merging && !committed) {
         try {
           let mergeStarted = false;

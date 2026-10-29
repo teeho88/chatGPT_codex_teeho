@@ -7,6 +7,7 @@ import {
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
   activateChatGptEffortMenu,
   assertNewChatPage,
+  chatGptNewChatUrl,
   CHATGPT_NEW_CHAT_URL,
   detectChatGptAccountCapabilities,
 } from "../src/chatgpt-session";
@@ -24,7 +25,7 @@ test("new chats are always ordinary and reject a previous conversation or Tempor
       goto: async (next: string) => { url = next; navigations.push(next); },
       locator: (selector: string) => selector === CHATGPT_COMPOSER_SELECTOR ? composer : absent,
     };
-    expect(await prepare.call({ activeComposer: async () => composer }, page)).toBe(composer);
+    expect(await prepare.call({ config: { useTemporaryChats: false }, activeComposer: async () => composer }, page)).toBe(composer);
     expect(navigations).toEqual(initial === CHATGPT_NEW_CHAT_URL ? [] : [CHATGPT_NEW_CHAT_URL]);
     await expect(assertNewChatPage(page)).resolves.toBeUndefined();
     for (const invalid of ["https://chatgpt.com/c/previous-task", "https://chatgpt.com/?temporary-chat=true", "https://example.com/"]) {
@@ -32,6 +33,14 @@ test("new chats are always ordinary and reject a previous conversation or Tempor
       await expect(assertNewChatPage(page)).rejects.toThrow("requested new chat");
     }
   }
+});
+
+test.each([false, true])("new-chat URLs and validation honor useTemporaryChats=%s", async useTemporaryChats => {
+  const url = chatGptNewChatUrl(useTemporaryChats);
+  expect(url).toBe(useTemporaryChats ? "https://chatgpt.com/?temporary-chat=true" : CHATGPT_NEW_CHAT_URL);
+  const page = { url: () => url } as any;
+  await expect(assertNewChatPage(page, useTemporaryChats)).resolves.toBeUndefined();
+  await expect(assertNewChatPage(page, !useTemporaryChats)).rejects.toThrow("requested new chat");
 });
 
 test("composer and effort selectors exclude unrelated editable fields and menu buttons", () => {

@@ -34,7 +34,7 @@ test.each([false, true])("obsolete chat-mode preferences do not reach the helper
   })).toEqual({ ok: true, appName: "Codex Native2" });
 });
 
-test("daemon streams browser lifecycle through the real helper process", async () => {
+test.each([false, true])("daemon streams browser lifecycle and temporary chat mode through the real helper process (%s)", async useTemporaryChats => {
   const root = mkdtempSync(join(tmpdir(), "codex-launcher-helper-client-"));
   roots.push(root);
   const helper = join(root, "helper.ts");
@@ -43,6 +43,7 @@ test("daemon streams browser lifecycle through the real helper process", async (
     // Substitute only the browser. Both sides of the production IPC protocol run unchanged.
     ChatGptBrowserWorker.prototype.run = async function(turn) {
       if (Object.hasOwn(this.config, "useSavedChats")) throw new Error("Retired setting reached helper worker");
+      if (this.config.useTemporaryChats !== ${useTemporaryChats}) throw new Error("Temporary chat mode lost in helper IPC");
       if (turn.modelFamily !== "5.6") throw new Error("Pinned model family lost in helper IPC");
       await turn.onPreparedSelected(false);
       const prepared = await turn.prepare();
@@ -103,6 +104,7 @@ test("daemon streams browser lifecycle through the real helper process", async (
     turnTimeoutMs: 60_000,
     headed: true,
     autoApproveToolCalls: false,
+    useTemporaryChats,
   };
   const reasoning: Array<{ text: string; continuation: boolean }> = [];
   const deltas: string[] = [];

@@ -283,6 +283,34 @@ test("manual provider configuration preserves a distinct backend without guessin
   });
 });
 
+test.each([false, true])("temporary chat configuration is saved and forwarded (%s)", useTemporaryChats => {
+  const root = join(tmpdir(), `codex-web-temporary-config-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.CODEX_CHATGPT_WEB_HOME = root;
+  mkdirSync(root, { recursive: true });
+  const config = { ...defaultConfig("browser-only"), useTemporaryChats };
+  saveConfig(config);
+  const loaded = loadConfig();
+  expect(loaded.useTemporaryChats).toBe(useTemporaryChats);
+  expect(providerConfig(loaded).chatgptWeb!.useTemporaryChats).toBe(useTemporaryChats);
+  expect(providerConfig({ ...loaded, browserInteractionMode: "manual" }).chatgptWeb!.useTemporaryChats).toBe(useTemporaryChats);
+  writeFileSync(join(root, "config.json"), JSON.stringify({ ...config, useTemporaryChats: "true" }));
+  expect(() => loadConfig()).toThrow("useTemporaryChats");
+});
+
+test("missing temporary-chat settings default to true and ignore retired preferences", () => {
+  const root = join(tmpdir(), `codex-web-default-temporary-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.CODEX_CHATGPT_WEB_HOME = root;
+  mkdirSync(root, { recursive: true });
+  const config: Record<string, unknown> = { ...defaultConfig("browser-only"), useSavedChats: true };
+  expect(config.useTemporaryChats).toBe(true);
+  delete config.useTemporaryChats;
+  writeFileSync(join(root, "config.json"), JSON.stringify(config));
+  expect(loadConfig().useTemporaryChats).toBe(true);
+  expect(loadConfig()).not.toHaveProperty("useSavedChats");
+});
+
 test("retired chat preferences are removed without changing current configuration", () => {
   const root = join(tmpdir(), `codex-web-fresh-config-${process.pid}-${Date.now()}`);
   roots.push(root);

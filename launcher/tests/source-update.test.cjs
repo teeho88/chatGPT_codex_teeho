@@ -199,13 +199,17 @@ test("source updater rolls back merge when checks fail", async t => {
   const oldHead = git(f.checkout, "rev-parse", "HEAD");
   const run = async (executable, args, cwd) => {
     if (executable !== "git" && args[0] === "run" && args[1] === "typecheck") {
-      throw new Error("Typecheck failed");
+      const error = new Error("Typecheck failed");
+      error.stdout = "src/example.ts(1,1): error TS2304: Cannot find name 'missing'.";
+      throw error;
     }
     return f.run(executable, args, cwd);
   };
-  const controller = createSourceUpdateController({ repositoryRoot: f.checkout, upstreamUrl: f.upstream, run });
+  let loggedError;
+  const controller = createSourceUpdateController({ repositoryRoot: f.checkout, upstreamUrl: f.upstream, run, logger: { warn: (event, details) => { loggedError = details.message; } } });
   assert.equal((await controller.checkOnce()).status, "available");
-  await assert.rejects(controller.beginInstall(), /Typecheck failed/);
+  await assert.rejects(controller.beginInstall(), /TS2304/);
+  assert.match(loggedError, /TS2304/);
   assert.equal(git(f.checkout, "rev-parse", "HEAD"), oldHead);
   assert.equal(git(f.checkout, "status", "--porcelain", "--untracked-files=no"), "");
   assert.equal(controller.getState().status, "available");

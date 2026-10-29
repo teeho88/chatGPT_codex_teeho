@@ -313,6 +313,6 @@ export interface CodexProviderConfig {
     experimentalSkillAttachments?: boolean;
     /** Explicitly rebuild each automatic turn in a fresh browser conversation. */
     experimentalFreshConversationPerTurn?: boolean;
-    useSavedChats?: boolean;
+    useTemporaryChats?: boolean;
   };
 }
