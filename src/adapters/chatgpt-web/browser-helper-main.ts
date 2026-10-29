@@ -17,10 +17,10 @@ interface RunMessage {
   config: {
     appName: string;
     browserHostDescriptorPath: string;
+    useTemporaryChats?: boolean;
     browserDiagnosticsPath?: string;
     turnTimeoutMs: number;
     autoApproveToolCalls: boolean;
-    useTemporaryChats?: boolean;
   };
   turn: {
     traceId: string;

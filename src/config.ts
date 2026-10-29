@@ -121,12 +121,12 @@ export interface AppConfig {
   composerPredictionsEnabled: boolean;
   experimentalSkillAttachments: boolean;
   experimentalFreshConversationPerTurn: boolean;
+  useTemporaryChats: boolean;
   /** Explicitly install the additional Pro-sized model row while Zero Risk is active. */
   zeroRiskProEnabled: boolean;
   /** Optional adapter-silence budget for the Responses watchdog. */
   stallTimeoutSec?: number;
   autoApproveToolCalls: boolean;
-  useTemporaryChats: boolean;
   controlToken: string;
   runtimeCommand: string[];
   acknowledgedUnofficialAt?: string;
@@ -255,9 +255,9 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     composerPredictionsEnabled: true,
     experimentalSkillAttachments: false,
     experimentalFreshConversationPerTurn: false,
+    useTemporaryChats: true,
     zeroRiskProEnabled: false,
     autoApproveToolCalls: false,
-    useTemporaryChats: true,
     controlToken: randomBytes(32).toString("base64url"),
     runtimeCommand: currentRuntimeCommand(),
   };
@@ -413,9 +413,6 @@ function parseConfig(value: unknown, path: string): AppConfig {
   const parsed = { ...value } as Partial<AppConfig> & { useSavedChats?: unknown };
   // Retire the old chat-mode preference without invalidating existing installations.
   delete parsed.useSavedChats;
-  if (parsed.useTemporaryChats !== undefined && typeof parsed.useTemporaryChats !== "boolean") {
-    throw new Error(`Invalid useTemporaryChats in ${path}`);
-  }
   if (parsed.version !== 3) throw new Error(`Unsupported configuration version in ${path}; rerun setup to migrate it`);
   if (parsed.purpose !== undefined && parsed.purpose !== "dev-harness") {
     throw new Error(`Invalid configuration purpose in ${path}`);
@@ -554,6 +551,9 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (parsed.experimentalSkillAttachments !== undefined && typeof parsed.experimentalSkillAttachments !== "boolean") {
     throw new Error(`Invalid experimentalSkillAttachments in ${path}`);
   }
+  if (parsed.useTemporaryChats !== undefined && typeof parsed.useTemporaryChats !== "boolean") {
+    throw new Error(`Invalid useTemporaryChats in ${path}`);
+  }
   const experimentalSkillAttachments = parsed.experimentalSkillAttachments === true;
   if (parsed.composerPredictionsEnabled !== undefined && typeof parsed.composerPredictionsEnabled !== "boolean") {
     throw new Error(`Invalid composerPredictionsEnabled in ${path}`);
@@ -580,7 +580,6 @@ function parseConfig(value: unknown, path: string): AppConfig {
   }
   return {
     ...parsed,
-    useTemporaryChats: parsed.useTemporaryChats !== false,
     appName: expectedAppName,
     automaticAppName,
     manualAppName,
@@ -592,6 +591,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
     composerPredictionsEnabled,
     experimentalSkillAttachments,
     experimentalFreshConversationPerTurn,
+    useTemporaryChats: parsed.useTemporaryChats !== false,
     zeroRiskProEnabled,
   } as AppConfig;
 }
@@ -650,9 +650,9 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       experimentalBiggerContext: manual ? false : config.experimentalBiggerContext,
       experimentalSkillAttachments: manual ? false : config.experimentalSkillAttachments,
       experimentalFreshConversationPerTurn: !manual && config.experimentalFreshConversationPerTurn === true,
+      useTemporaryChats: config.useTemporaryChats,
       ...(config.stallTimeoutSec !== undefined ? { stallTimeoutSec: config.stallTimeoutSec } : {}),
       autoApproveToolCalls: manual ? false : config.autoApproveToolCalls,
-      useTemporaryChats: config.useTemporaryChats,
     },
   };
 }
