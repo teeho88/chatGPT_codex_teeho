@@ -107,6 +107,44 @@ test("conflict prompt accepts per-file choices and retries invalid input", async
   } finally { resolve.close(); }
 });
 
+for (const backspace of ["\b", "\x7f"]) {
+  for (const terminal of [false, true]) {
+    test(`conflict prompt accepts corrected input with ${JSON.stringify(backspace)} (terminal=${terminal})`, async () => {
+      const input = new PassThrough();
+      const output = new PassThrough();
+      input.isTTY = terminal;
+      output.isTTY = terminal;
+      output.columns = 80;
+      let transcript = "";
+      output.on("data", chunk => { transcript += chunk; });
+      const resolve = createConflictResolver({ input, output });
+      try {
+        const pending = resolve({ filename: "one.txt", hasLocal: true, hasUpstream: true, index: 1, total: 1 });
+        input.write(`L${backspace}U\n`);
+        input.end();
+        assert.equal(await pending, "upstream");
+        assert.doesNotMatch(transcript, /Invalid choice/);
+      } finally { resolve.close(); }
+    });
+  }
+}
+
+for (const [answer, expected] of [["local\b\b\b\b\bupstream\n", "upstream"], ["\b\x7fL\x7f\n", "abort"]]) {
+  test(`conflict prompt handles repeated erasures in ${JSON.stringify(answer)}`, async () => {
+    const resolve = createConflictResolver({ input: Readable.from([answer]), output: new PassThrough() });
+    try {
+      assert.equal(await resolve({ filename: "one.txt", hasLocal: true, hasUpstream: true, index: 1, total: 1 }), expected);
+    } finally { resolve.close(); }
+  });
+}
+
+test("working-tree menu accepts a corrected choice", async () => {
+  const prompts = createUpdatePrompts({ input: Readable.from(["C\bS\n"]), output: new PassThrough() });
+  try {
+    assert.equal(await prompts.resolveWorkingTree({ status: " M package.json" }), "stash");
+  } finally { prompts.close(); }
+});
+
 test("conflict prompt shows code differences before offering the file choices", async t => {
   const { git } = fixture(t);
   const output = new PassThrough();

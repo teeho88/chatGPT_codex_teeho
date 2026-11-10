@@ -17,7 +17,12 @@ function createUpdatePrompts({ input = process.stdin, output = process.stdout } 
       output.write(question);
       const answer = await lines.next();
       if (answer.done) return "abort";
-      const value = answer.value.trim().toLowerCase();
+      const characters = [];
+      for (const character of answer.value) {
+        if (character === "\b" || character === "\x7f") characters.pop();
+        else characters.push(character);
+      }
+      const value = characters.join("").trim().toLowerCase();
       if (Object.hasOwn(choices, value)) return choices[value];
       output.write("Invalid choice. Try again.\n");
     }
