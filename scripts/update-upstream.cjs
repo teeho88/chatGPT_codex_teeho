@@ -199,6 +199,36 @@ async function runUpdate({
   }
 }
 
+async function runLoggedUpdate(options = {}) {
+  const repositoryRoot = options.repositoryRoot || defaultRepositoryRoot;
+  const logFile = path.resolve(repositoryRoot, git(repositoryRoot, "rev-parse", "--git-path", "upstream-update.log"));
+  const output = options.logger || console;
+  const logger = Object.fromEntries(["log", "error"].map(level => [level, message => {
+    fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${level.toUpperCase()} ${message}\n`);
+    output[level](message);
+  }]));
+  const recordChoice = (kind, resolve) => resolve && (async details => {
+    const choice = await resolve(details);
+    logger.log(`${kind}: ${JSON.stringify({ ...(details.filename ? { filename: details.filename } : {}), choice })}`);
+    return choice;
+  });
+  logger.log(`Upstream update log: ${logFile}`);
+  logger.log(`Update options: ${JSON.stringify({ checkOnly: Boolean(options.checkOnly), coreOnly: Boolean(options.coreOnly) })}`);
+  try {
+    const result = await runUpdate({
+      ...options,
+      logger,
+      resolveConflict: recordChoice("Conflict choice", options.resolveConflict),
+      resolveWorkingTree: recordChoice("Working-tree choice", options.resolveWorkingTree),
+    });
+    logger.log(`Update result: ${JSON.stringify(result)}`);
+    return result;
+  } catch (error) {
+    logger.error(`Upstream update failed: ${error.stack || error.message}`);
+    throw error;
+  }
+}
+
 if (require.main === module) {
   const args = process.argv.slice(2);
   if (args.includes("--preserve-quota-hooks")) {
@@ -220,11 +250,11 @@ if (require.main === module) {
     process.exitCode = 2;
   } else {
     const prompts = createUpdatePrompts();
-    runUpdate({ coreOnly: args.includes("--core-only"), checkOnly: args.includes("--check"), resolveConflict: prompts.resolveConflict, resolveWorkingTree: prompts.resolveWorkingTree }).catch(error => {
+    runLoggedUpdate({ coreOnly: args.includes("--core-only"), checkOnly: args.includes("--check"), resolveConflict: prompts.resolveConflict, resolveWorkingTree: prompts.resolveWorkingTree }).catch(error => {
       console.error(`Upstream update failed: ${error.message}`);
       process.exitCode = 1;
     }).finally(() => prompts.close());
   }
 }
 
-module.exports = { runUpdate, preserveQuotaHooks };
+module.exports = { runUpdate, runLoggedUpdate, preserveQuotaHooks };

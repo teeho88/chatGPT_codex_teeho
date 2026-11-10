@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
-const { runUpdate } = require("../../scripts/update-upstream.cjs");
+const { runUpdate, runLoggedUpdate } = require("../../scripts/update-upstream.cjs");
 
 const silent = { log() {}, error() {} };
 
@@ -42,6 +42,54 @@ function fixture(t) {
   git(checkout, "push", "origin", "master");
   return { checkout, upstream, origin, seed };
 }
+
+test("upstream CLI persists failure details without changing repository history", async t => {
+  const f = fixture(t);
+  const head = git(f.checkout, "rev-parse", "HEAD");
+  git(f.checkout, "switch", "-c", "feature");
+  await assert.rejects(runLoggedUpdate({ repositoryRoot: f.checkout, logger: silent }), /master branch/);
+  const transcript = fs.readFileSync(path.join(f.checkout, ".git", "upstream-update.log"), "utf8");
+  assert.match(transcript, /Upstream update failed: Error: Run the upstream update from the master branch/);
+  assert.match(transcript, /at assertReady/);
+  assert.equal(git(f.checkout, "rev-parse", "HEAD"), head);
+  assert.equal(git(f.checkout, "status", "--porcelain"), "");
+});
+
+test("upstream CLI appends working-tree decisions and results across runs", async t => {
+  const f = fixture(t);
+  const content = '{"version":"1.0.0","localWork":true}\n';
+  fs.writeFileSync(path.join(f.checkout, "package.json"), content);
+  for (let index = 0; index < 2; index += 1) {
+    const result = await runLoggedUpdate({ repositoryRoot: f.checkout, logger: silent, resolveWorkingTree: async () => "abort" });
+    assert.equal(result.status, "cancelled");
+  }
+  const transcript = fs.readFileSync(path.join(f.checkout, ".git", "upstream-update.log"), "utf8");
+  assert.equal((transcript.match(/Working-tree choice: {"choice":"abort"}/g) || []).length, 2);
+  assert.equal((transcript.match(/Update result: {"status":"cancelled"}/g) || []).length, 2);
+  assert.equal(fs.readFileSync(path.join(f.checkout, "package.json"), "utf8"), content);
+});
+
+test("upstream CLI records conflict choices and the merge failure after rollback", async t => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.checkout, "package.json"), '{"version":"2.0.0","local":true}\n');
+  git(f.checkout, "add", "package.json");
+  git(f.checkout, "commit", "-m", "Local manifest");
+  fs.writeFileSync(path.join(f.seed, "package.json"), '{"version":"3.0.0","upstream":true}\n');
+  git(f.seed, "add", "package.json");
+  git(f.seed, "commit", "-m", "Upstream manifest");
+  git(f.seed, "push", "origin", "main");
+  const head = git(f.checkout, "rev-parse", "HEAD");
+  await assert.rejects(runLoggedUpdate({
+    repositoryRoot: f.checkout, upstreamUrl: f.upstream, logger: silent, resolveConflict: async () => "abort",
+  }), /Conflict resolution cancelled/);
+  const transcript = fs.readFileSync(path.join(f.checkout, ".git", "upstream-update.log"), "utf8");
+  assert.match(transcript, /Conflict choice: {"filename":"package.json","choice":"abort"}/);
+  assert.match(transcript, /launcher.source_update_failed: .*backup\/pre-upstream-/);
+  assert.match(transcript, /Upstream update failed: Error: Conflict resolution cancelled/);
+  assert.equal(git(f.checkout, "rev-parse", "HEAD"), head);
+  assert.equal(git(f.checkout, "status", "--porcelain"), "");
+  assert.equal(fs.existsSync(path.join(f.checkout, ".git", "MERGE_HEAD")), false);
+});
 
 test("upstream CLI can publish local commits when versions differ but upstream has no new commits", async t => {
   const f = fixture(t);
