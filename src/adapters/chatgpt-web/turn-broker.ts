@@ -160,6 +160,7 @@ interface BrokerRequest {
   traceId?: string;
   callId?: string;
   activityId?: string;
+  activityLease?: boolean;
   revision?: number;
   toolResult?: BrokerToolResult;
   handoffId?: string;
@@ -315,6 +316,7 @@ export class TurnBroker implements TurnBrokerOwner {
   }
 
   private readonly channels = new Map<string, TurnChannel>();
+  private readonly activitySockets = new Map<Socket, string>();
   private readonly pending = new Map<string, TurnChannel>();
   private readonly compactionTransactions = new CompactionTransactionStore();
   private readonly bindings = new Map<string, { token: string; channel: TurnChannel }>();
@@ -689,6 +691,9 @@ export class TurnBroker implements TurnBrokerOwner {
       ...(failure ? { failure } : {}),
     })}`);
     this.channels.delete(token);
+    for (const [socket, owner] of this.activitySockets) {
+      if (owner === token) socket.destroy();
+    }
     this.pending.delete(token);
     if (channel.bindingId) {
       this.bindings.delete(channel.bindingId);
@@ -958,20 +963,30 @@ export class TurnBroker implements TurnBrokerOwner {
         this.writeSocketResponse(socket, { id: request?.id ?? "unknown", error: errorOf(error).message });
         return;
       }
+      const leasedClaim = request.method === "claim" && request.activityLease === true;
+      if (leasedClaim) {
+        this.activitySockets.set(socket, request.token ?? "");
+        socket.once("close", () => {
+          this.activitySockets.delete(socket);
+          void this.dispatch({ id: request!.id, method: "activity_complete", token: request!.token,
+            activityId: request!.activityId }).catch(() => {});
+        });
+      }
       void Promise.resolve().then(() => this.dispatch(request!, disconnected.signal)).then(
-        result => this.writeSocketResponse(socket, { id: request!.id, result }),
+        result => this.writeSocketResponse(socket, { id: request!.id, result }, leasedClaim),
         error => this.writeSocketResponse(socket, { id: request!.id, error: errorOf(error).message }),
       );
     });
   }
 
-  private writeSocketResponse(socket: Socket, response: BrokerResponse): void {
+  private writeSocketResponse(socket: Socket, response: BrokerResponse, keepOpen = false): void {
     const line = `${JSON.stringify(response)}\n`;
     if (line.length > MAX_BROKER_LINE_CHARS) {
       socket.end(`${JSON.stringify({ id: response.id, error: "turn broker response exceeds size limit" } satisfies BrokerResponse)}\n`);
       return;
     }
-    socket.end(line);
+    if (keepOpen) socket.write(line);
+    else socket.end(line);
   }
 
   private validateRequest(request: BrokerRequest): void {
@@ -1339,17 +1354,19 @@ export async function callTurnBroker<T>(
   request: Omit<BrokerRequest, "id">,
   timeoutMs: number | null = 5_000,
   signal?: AbortSignal,
+  activityLease?: { close?: () => void },
 ): Promise<T> {
   const id = opaqueId("request");
-  const settleOnResponseFrame = timeoutMs === null;
+  const settleOnResponseFrame = timeoutMs === null || activityLease !== undefined;
   // The wire protocol requires a client-owned activity identity. Most callers never need to see
   // it; the MCP server supplies its own so it can retire an ambiguously delivered claim, while
   // lower-level diagnostics receive an equally client-generated identity here.
   const wireRequest = request.method === "claim" && request.activityId === undefined
-    ? { ...request, activityId: opaqueId("activity") }
-    : request;
+    ? { ...request, activityId: opaqueId("activity"), ...(activityLease ? { activityLease: true } : {}) }
+    : { ...request, ...(activityLease ? { activityLease: true } : {}) };
   return new Promise<T>((resolveCall, rejectCall) => {
     const socket = createConnection(socketPath);
+    if (activityLease) activityLease.close = () => socket.destroy();
     let buffered = "";
     let settled = false;
     let response: BrokerResponse | undefined;
@@ -1388,6 +1405,10 @@ export async function callTurnBroker<T>(
     // The server owns response termination. Bounded calls wait for the pipe/socket to close
     // before their callers can advance the lifecycle while Bun drains named-pipe writes.
     socket.once("close", finishResponse);
+    socket.once("end", () => {
+      finishResponse();
+      socket.destroy();
+    });
     socket.once("connect", () => socket.write(`${JSON.stringify({ id, ...wireRequest })}\n`));
     socket.on("data", chunk => {
       if (settled || response) return;
@@ -1420,7 +1441,7 @@ export async function callTurnBroker<T>(
         // Long-polls and failed requests can settle on the full response frame. Successful
         // bounded calls still wait for the peer to close before advancing the lifecycle.
         finishResponse();
-        socket.destroy();
+        if (!activityLease || parsed.error) socket.destroy();
       }
     });
   });

@@ -12,6 +12,7 @@ import { observeMcpToolCalls } from "./mcp-observation";
 interface ClaimedTurn {
   bindingId: string;
   activityId: string;
+  closeActivity: () => void;
   environment: ChatGptTurnEnvironment & { expiresAt?: number };
 }
 
@@ -500,15 +501,18 @@ export async function runChatGptMcpServer(options: {
   ): Promise<ClaimedTurn> => {
     console.error(`[chatgpt-web-mcp] ${toolName} scope=${requestScopeSummary(extra)}`);
     const activityId = `activity_${randomBytes(18).toString("base64url")}`;
+    const lease: { close?: () => void } = {};
     try {
-      const claimed = await callTurnBroker<Omit<ClaimedTurn, "activityId">>(
+      const claimed = await callTurnBroker<Omit<ClaimedTurn, "activityId" | "closeActivity">>(
         options.brokerSocketPath,
         { method: "claim", token: turnToken, activityId, contract },
         contract === "safe" ? null : 5_000,
         extra.signal,
+        lease,
       );
-      return { ...claimed, activityId };
+      return { ...claimed, activityId, closeActivity: () => lease.close?.() };
     } catch (error) {
+      lease.close?.();
       try {
         await settleTurnActivity(turnToken, activityId);
       } catch (cleanupError) {
@@ -555,7 +559,11 @@ export async function runChatGptMcpServer(options: {
       // The broker's terminal fence treats even a fully local inventory lookup as live MCP work.
       // Settle the lease without the request AbortSignal: cancellation must not strand activity
       // and silently prevent every later completion candidate from committing.
-      await settleTurnActivity(turnToken, claimed.activityId);
+      try {
+        await settleTurnActivity(turnToken, claimed.activityId);
+      } finally {
+        claimed.closeActivity();
+      }
     }
   };
 
