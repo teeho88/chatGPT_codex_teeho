@@ -61,6 +61,34 @@ function isSourceCheckout(repositoryRoot) {
   return fs.existsSync(path.join(repositoryRoot, ".git"));
 }
 
+async function selectUpdateBun(repositoryRoot, run, platform = process.platform, arch = process.arch) {
+  const cached = path.join(repositoryRoot, ".local", "upstream-tools", "bun-1.4.1", `bun-windows-${arch}`, "bun.exe");
+  const bundled = path.join(repositoryRoot, "launcher", "build", "runtime", "runtime", platform === "win32" ? "bun.exe" : "bun");
+  const candidates = [
+    ...(platform === "win32" && fs.existsSync(cached) ? [cached] : []),
+    "bun",
+    ...(fs.existsSync(bundled) ? [bundled] : []),
+  ];
+  const rejected = [];
+  for (const executable of candidates) {
+    let version;
+    try { version = (await run(executable, ["--version"], repositoryRoot)).trim(); }
+    catch { continue; }
+    const numbers = /^(\d+)\.(\d+)\.(\d+)(?:$|\+)/.exec(version);
+    const [major, minor, patch] = numbers ? numbers.slice(1).map(Number) : [];
+    const supported = numbers && (major > 1 || (major === 1 && (minor > 4 || (minor === 4 && patch >= 1))));
+    if (platform === "win32" && !supported) {
+      rejected.push(`${executable}: ${version}`);
+      continue;
+    }
+    return { executable, version };
+  }
+  if (rejected.length) {
+    throw new Error(`Upstream validation on Windows requires Bun 1.4.1 or newer; older versions can crash on named-pipe tests. Found ${rejected.join(", ")}. Install a supported Bun on PATH or place Bun 1.4.1 at ${cached}.`);
+  }
+  throw new Error("Bun was not found on PATH or in launcher/build/runtime");
+}
+
 async function preserveLocalDocumentation(repositoryRoot, git) {
   const tracked = new Set((await git("ls-files", "-z")).split("\0").filter(Boolean));
   const filenames = fs.readdirSync(repositoryRoot).filter(filename =>
@@ -304,13 +332,8 @@ function createSourceUpdateController({
       }
       assertFeaturesPreserved(repositoryRoot, features);
       await git("diff", "--cached", "--check");
-      let bun = "bun";
-      try {
-        await run(bun, ["--version"], repositoryRoot);
-      } catch {
-        bun = path.join(repositoryRoot, "launcher", "build", "runtime", "runtime", process.platform === "win32" ? "bun.exe" : "bun");
-        if (!fs.existsSync(bun)) throw new Error("Bun was not found on PATH or in launcher/build/runtime");
-      }
+      const { executable: bun, version: bunVersion } = await selectUpdateBun(repositoryRoot, run);
+      logger?.info?.("launcher.source_update_bun", { executable: bun, version: bunVersion });
       await run(bun, ["install", "--frozen-lockfile"], repositoryRoot);
       await run(bun, ["run", "typecheck"], repositoryRoot);
       await run(bun, ["test", ...[
@@ -405,4 +428,4 @@ function createSourceUpdateController({
   };
 }
 
-module.exports = { createSourceUpdateController, isSourceCheckout };
+module.exports = { createSourceUpdateController, isSourceCheckout, selectUpdateBun };

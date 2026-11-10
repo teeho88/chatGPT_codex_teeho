@@ -6,7 +6,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { promisify } = require("node:util");
 const { execFile } = require("node:child_process");
-const { createSourceUpdateController, isSourceCheckout } = require("../electron/source-update.cjs");
+const { createSourceUpdateController, isSourceCheckout, selectUpdateBun } = require("../electron/source-update.cjs");
 
 const execAsync = promisify(execFile);
 
@@ -71,7 +71,7 @@ function fixture(t) {
   const run = async (executable, args, cwd) => {
     if (executable !== "git") {
       bunCalls.push(args);
-      return args[0] === "--version" ? "1.4.0" : "";
+      return args[0] === "--version" ? "1.4.1" : "";
     }
     const { stdout } = await execAsync(executable, args, { cwd, encoding: "utf8", windowsHide: true });
     return args.includes("-z") ? stdout : stdout.trim();
@@ -79,6 +79,40 @@ function fixture(t) {
   const controller = (options = {}) => createSourceUpdateController({ repositoryRoot: checkout, upstreamUrl: upstream, run, ...options });
   return { checkout, upstream, origin, publishUpstream, bunCalls, run, controller };
 }
+
+test("Windows updater prefers the cached Bun fix over the bundled crashing runtime", async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "updater-bun-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const cached = path.join(root, ".local", "upstream-tools", "bun-1.4.1", "bun-windows-x64", "bun.exe");
+  write(root, path.relative(root, cached), "");
+  const selected = await selectUpdateBun(root, async executable => {
+    assert.equal(executable, cached);
+    return "1.4.1\n";
+  }, "win32", "x64");
+  assert.equal(selected.executable, cached);
+  assert.equal(selected.version, "1.4.1");
+});
+
+test("Windows updater falls back to a supported bundle when PATH has Bun 1.4.0", async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "updater-bun-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const bundled = path.join(root, "launcher", "build", "runtime", "runtime", "bun.exe");
+  write(root, path.relative(root, bundled), "");
+  const selected = await selectUpdateBun(root, async executable => executable === "bun" ? "1.4.0" : "1.4.2", "win32", "x64");
+  assert.equal(selected.executable, bundled);
+});
+
+test("Windows updater rejects the crashing runtime with recovery instructions", async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "updater-bun-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  await assert.rejects(selectUpdateBun(root, async () => "1.4.0", "win32", "x64"), /requires Bun 1\.4\.1 or newer.*named-pipe.*Install a supported Bun/s);
+});
+
+test("non-Windows updater keeps using its existing Bun version", async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "updater-bun-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  assert.deepEqual(await selectUpdateBun(root, async () => "1.4.0", "linux", "x64"), { executable: "bun", version: "1.4.0" });
+});
 
 test("source update fetches, creates backup, resolves README deletion, tests, commits and pushes", async t => {
   const f = fixture(t);
@@ -186,7 +220,7 @@ for (const choice of ["local", "upstream", "abort"]) {
       assert.equal(fs.readFileSync(path.join(f.checkout, "feature.txt"), "utf8").trim(), `${choice} choice`);
       assert.equal(git(f.checkout, "merge-base", "--is-ancestor", upstreamHead, "HEAD"), "");
       assert.equal(git(f.checkout, "rev-parse", "HEAD"), git(f.origin, "rev-parse", "master"));
-      assert.equal(f.bunCalls.length, 4);
+      assert.equal(f.bunCalls.length, 5);
     }
     assert.equal(prompts.length, 1);
     assert.equal(prompts[0].filename, "feature.txt");
